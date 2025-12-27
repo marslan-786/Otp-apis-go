@@ -125,17 +125,21 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
-		// Dates logic matches previous panels
+		// --- DATE LOGIC CHANGED HERE ---
 		now := time.Now()
-		// Neon logs show data exists for older dates, keeping window wide or specific?
-		// User used: 2025-12-24 to 2025-12-30 in logs. Let's use standard today logic 
-		// OR modify if you want wide range. Defaulting to Today.
-		dateStr := now.Format("2006-01-02")
 		
+		// Start Date: Current Month's 1st Day (e.g., 2025-12-01 00:00:00)
+		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
+
+		// End Date: Today's Date till End of Day (e.g., 2025-12-28 23:59:59)
+		fdate2 := now.Format("2006-01-02") + " 23:59:59"
+
 		params := url.Values{}
-		params.Set("fdate1", dateStr+" 00:00:00")
-		params.Set("fdate2", dateStr+" 23:59:59")
-		// Params from your log
+		params.Set("fdate1", fdate1) // Fixed to 1st of Month
+		params.Set("fdate2", fdate2) // Dynamic Today
+		
+		// Baqi params same rahengy
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		params.Set("fg", "0") 
@@ -145,7 +149,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("sSortDir_0", "desc")
 
 		finalURL := SMSApiURL + "?" + params.Encode()
-		fmt.Println("[NPM-Neon] Fetching SMS...")
+		fmt.Println("[NPM-Neon] Fetching SMS (From 1st to Now)...")
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
@@ -167,7 +171,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		// --- CLEANING START ---
 		cleanedJSON, err := cleanSMSData(body)
 		if err != nil {
-			return nil, err // If cleaning fails, return error
+			return nil, err 
 		}
 		// --- CLEANING END ---
 
@@ -175,6 +179,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 	}
 	return nil, errors.New("failed after retry")
 }
+
 
 func cleanSMSData(rawJSON []byte) ([]byte, error) {
 	var apiResp ApiResponse
