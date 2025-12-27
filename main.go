@@ -5,21 +5,23 @@ import (
 	"net/http"
 	"os"
 
-	// Dono packages import karein
 	"myproject/dgroup"
-	"myproject/numberpanel" // <--- NEW IMPORT
-	"myproject/npmneon"
+	"myproject/numberpanel"
+	"myproject/npmneon" // Import मौजूद hai
+
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	r := gin.Default()
 
-	// 1. Initialize D-Group
+	// ---------------- INITIALIZATION (Ye Teeno Lines Zaroori Hain) ----------------
 	dClient := dgroup.NewClient()
-
-	// 2. Initialize Number Panel (NEW)
 	npClient := numberpanel.NewClient()
+	
+	// *** YE WALI LINE MISSING THI ***
+	neonClient := npmneon.NewClient() 
+	// ********************************
 
 	// ================= D-GROUP ROUTES =================
 	r.GET("/d-group/sms", func(c *gin.Context) {
@@ -40,7 +42,7 @@ func main() {
 		c.Data(http.StatusOK, "application/json", data)
 	})
 
-	// ================= NUMBER PANEL ROUTES (NEW) =================
+	// ================= NUMBER PANEL ROUTES =================
 	r.GET("/number-panel/sms", func(c *gin.Context) {
 		data, err := npClient.GetSMSLogs()
 		if err != nil {
@@ -58,15 +60,15 @@ func main() {
 		}
 		c.Data(http.StatusOK, "application/json", data)
 	})
-	
-	
+
+	// ================= NPM-NEON ROUTES =================
 	r.GET("/npm-neon/sms", func(c *gin.Context) {
+		// Ab neonClient defined hai, error nahi ayega
 		data, err := neonClient.GetSMSLogs()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// Ab data clean ho kar JSON format me hi jayega
 		c.Data(http.StatusOK, "application/json", data)
 	})
 
@@ -79,7 +81,7 @@ func main() {
 		c.Data(http.StatusOK, "application/json", data)
 	})
 
-	// Server Start Logic
+	// ================= SERVER START =================
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
