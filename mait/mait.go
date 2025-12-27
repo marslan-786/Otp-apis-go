@@ -17,8 +17,7 @@ import (
 	"time"
 )
 
-// ... (Imports & Structs Same as before) ...
-// URLs
+// URLs for Masdar Alkon (IP: 217.182.195.194)
 const (
 	BaseURL      = "http://217.182.195.194"
 	LoginURL     = BaseURL + "/ints/login"
@@ -28,6 +27,7 @@ const (
 	NumberApiURL = BaseURL + "/ints/agent/res/data_smsnumbers.php"
 )
 
+// Response Wrapper
 type ApiResponse struct {
 	SEcho                interface{}     `json:"sEcho"`
 	ITotalRecords        interface{}     `json:"iTotalRecords"`
@@ -37,7 +37,7 @@ type ApiResponse struct {
 
 type Client struct {
 	HTTPClient *http.Client
-	Csstr      string
+	Csstr      string // Only CSSTR is needed now
 	Mutex      sync.Mutex
 }
 
@@ -51,6 +51,7 @@ func NewClient() *Client {
 	}
 }
 
+// ensureSession: Check if we have the Csstr token
 func (c *Client) ensureSession() error {
 	if c.Csstr != "" {
 		return nil
@@ -60,99 +61,151 @@ func (c *Client) ensureSession() error {
 }
 
 func (c *Client) performLogin() error {
-	// ... (Login Logic Same as previous, keeping it short here) ...
+	fmt.Println("[Masdar] >> Step 1: Login Page")
+	
 	req, _ := http.NewRequest("GET", LoginURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+
 	resp, err := c.HTTPClient.Do(req)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	
+	bodyString := string(bodyBytes)
+
+	// Captcha Logic: What is 5 + 2 = ?
+	fmt.Println("[Masdar] >> Step 2: Solving Captcha")
 	re := regexp.MustCompile(`What is (\d+) \+ (\d+) = \?`)
-	matches := re.FindStringSubmatch(string(bodyBytes))
-	if len(matches) < 3 { return errors.New("captcha failed") }
-	n1, _ := strconv.Atoi(matches[1])
-	n2, _ := strconv.Atoi(matches[2])
-	
+	matches := re.FindStringSubmatch(bodyString)
+	if len(matches) < 3 {
+		return errors.New("captcha math failed")
+	}
+	num1, _ := strconv.Atoi(matches[1])
+	num2, _ := strconv.Atoi(matches[2])
+	captchaAns := strconv.Itoa(num1 + num2)
+	fmt.Printf("[Masdar] Captcha Solved: %s\n", captchaAns)
+
+	// Step 3: Login POST
 	data := url.Values{}
 	data.Set("username", "Kami526")
 	data.Set("password", "Kami526")
-	data.Set("capt", strconv.Itoa(n1+n2))
+	data.Set("capt", captchaAns)
 
 	loginReq, _ := http.NewRequest("POST", SigninURL, bytes.NewBufferString(data.Encode()))
 	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	loginReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 	loginReq.Header.Set("Referer", LoginURL)
+
 	resp, err = c.HTTPClient.Do(loginReq)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
 
+	// Step 4: Get Only Csstr
+	fmt.Println("[Masdar] >> Step 3: Getting Csstr Token")
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
 	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+
 	resp, err = c.HTTPClient.Do(reportReq)
-	if err != nil { return err }
-	defer resp.Body.Close()
-	rBody, _ := io.ReadAll(resp.Body)
-	
-	csstrRe := regexp.MustCompile(`csstr=([^"&']+)`)
-	match := csstrRe.FindStringSubmatch(string(rBody))
-	if len(match) > 1 {
-		c.Csstr = match[1]
-	} else {
-		fbRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']([^"']+)["']`)
-		m2 := fbRe.FindStringSubmatch(string(rBody))
-		if len(m2) > 1 { c.Csstr = m2[1] }
+	if err != nil {
+		return err
 	}
+	defer resp.Body.Close()
+	reportBody, _ := io.ReadAll(resp.Body)
+	reportString := string(reportBody)
+	
+	// Regex specifically for 'csstr'
+	csstrRe := regexp.MustCompile(`csstr=([^"&']+)`)
+	csstrMatch := csstrRe.FindStringSubmatch(reportString)
+	
+	if len(csstrMatch) > 1 {
+		c.Csstr = csstrMatch[1]
+		fmt.Println("[Masdar] SUCCESS: Found Csstr:", c.Csstr)
+	} else {
+		// Fallback regex
+		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']([^"']+)["']`)
+		match2 := fallbackRe.FindStringSubmatch(reportString)
+		if len(match2) > 1 {
+			c.Csstr = match2[1]
+			fmt.Println("[Masdar] SUCCESS: Found Csstr (Fallback):", c.Csstr)
+		} else {
+			fmt.Println("[Masdar] Warning: Csstr not found! API calls might fail.")
+		}
+	}
+
 	return nil
 }
 
-// ---------------------- SMS CLEANING (User Removed) ----------------------
+// ---------------------- SMS CLEANING ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
 	for i := 0; i < 2; i++ {
-		if err := c.ensureSession(); err != nil { return nil, err }
+		if err := c.ensureSession(); err != nil {
+			return nil, err
+		}
 
 		now := time.Now()
+		// Fixed Start Date Logic (1st of Month)
 		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		
+		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
+		fdate2 := now.Format("2006-01-02") + " 23:59:59"
+
 		params := url.Values{}
-		params.Set("fdate1", startDate.Format("2006-01-02")+" 00:00:00")
-		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
+		params.Set("fdate1", fdate1)
+		params.Set("fdate2", fdate2)
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		params.Set("fg", "0")
-		if c.Csstr != "" { params.Set("csstr", c.Csstr) }
+		
+		if c.Csstr != "" {
+			params.Set("csstr", c.Csstr)
+		}
+
 		params.Set("sEcho", "3")
 		params.Set("iDisplayLength", "100") 
 		params.Set("iSortingCols", "1")
 		params.Set("sSortDir_0", "desc")
 
-		req, _ := http.NewRequest("GET", SMSApiURL+"?"+params.Encode(), nil)
+		finalURL := SMSApiURL + "?" + params.Encode()
+		fmt.Println("[Masdar] Fetching SMS...")
+
+		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 		resp, err := c.HTTPClient.Do(req)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			c.Csstr = ""
+			fmt.Println("[Masdar] HTML detected (Session Expired), Retrying...")
+			c.Csstr = "" // Reset Token
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
 		}
 
-		return cleanMasdarSMS(body)
+		cleanedJSON, err := cleanMasdarSMS(body)
+		if err != nil {
+			return nil, err
+		}
+		return cleanedJSON, nil
 	}
 	return nil, errors.New("failed after retry")
 }
 
 func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	var apiResp ApiResponse
-	if err := json.Unmarshal(rawJSON, &apiResp); err != nil { return rawJSON, nil }
+	if err := json.Unmarshal(rawJSON, &apiResp); err != nil {
+		return rawJSON, nil
+	}
 
 	var cleanedRows [][]interface{}
 
@@ -160,7 +213,7 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	// Target: [Date, Country, Number, Service, Message, Currency, Cost, Status] (User Removed)
 
 	for _, row := range apiResp.AAData {
-		if len(row) > 8 { // Ensure we have enough columns
+		if len(row) > 8 {
 			// Message Cleanup (Index 5 in RAW)
 			msg, _ := row[5].(string)
 			msg = html.UnescapeString(msg)
@@ -185,29 +238,41 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING (Same as before) ----------------------
+// ---------------------- NUMBERS CLEANING ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
-	// ... (Same logic as previous turn) ...
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
 	for i := 0; i < 2; i++ {
-		if err := c.ensureSession(); err != nil { return nil, err }
+		if err := c.ensureSession(); err != nil {
+			return nil, err
+		}
 
 		params := url.Values{}
+		params.Set("frange", "")
+		params.Set("fclient", "")
+		
+		if c.Csstr != "" {
+			params.Set("csstr", c.Csstr)
+		}
+
 		params.Set("sEcho", "2")
-		params.Set("iDisplayLength", "-1")
+		params.Set("iDisplayLength", "-1") // Fetch All
 		params.Set("iSortingCols", "1")
 		params.Set("sSortDir_0", "asc")
-		if c.Csstr != "" { params.Set("csstr", c.Csstr) }
 
-		req, _ := http.NewRequest("GET", NumberApiURL+"?"+params.Encode(), nil)
+		finalURL := NumberApiURL + "?" + params.Encode()
+		fmt.Println("[Masdar] Fetching Numbers...")
+
+		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 		resp, err := c.HTTPClient.Do(req)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
@@ -216,15 +281,21 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
 		}
-		return cleanMasdarNumbers(body)
+
+		cleanedJSON, err := cleanMasdarNumbers(body)
+		if err != nil {
+			return nil, err
+		}
+		return cleanedJSON, nil
 	}
-	return nil, errors.New("failed")
+	return nil, errors.New("failed after retry")
 }
 
 func cleanMasdarNumbers(rawJSON []byte) ([]byte, error) {
-	// ... (Same cleaning logic as previous turn) ...
 	var apiResp ApiResponse
-	if err := json.Unmarshal(rawJSON, &apiResp); err != nil { return rawJSON, nil }
+	if err := json.Unmarshal(rawJSON, &apiResp); err != nil {
+		return rawJSON, nil
+	}
 
 	var cleanedRows [][]interface{}
 	rePrice := regexp.MustCompile(`[\d\.]+`)
@@ -237,19 +308,27 @@ func cleanMasdarNumbers(rawJSON []byte) ([]byte, error) {
 			
 			priceHTML, _ := row[4].(string)
 			billingType := "Weekly"
-			if strings.Contains(strings.ToLower(priceHTML), "monthly") { billingType = "Monthly" }
+			if strings.Contains(strings.ToLower(priceHTML), "monthly") {
+				billingType = "Monthly"
+			}
 
 			currency := "$"
-			if strings.Contains(priceHTML, "€") { currency = "€" }
-			else if strings.Contains(priceHTML, "£") { currency = "£" }
+			if strings.Contains(priceHTML, "€") {
+				currency = "€"
+			} else if strings.Contains(priceHTML, "£") {
+				currency = "£"
+			}
 			
 			priceVal := "0"
 			matches := rePrice.FindAllString(priceHTML, -1)
-			if len(matches) > 0 { priceVal = matches[len(matches)-1] }
+			if len(matches) > 0 {
+				priceVal = matches[len(matches)-1]
+			}
 			priceStr := currency + " " + priceVal
 
 			stats := row[7]
 
+			// Target Format: [Country, Prefix, Number, Type, Price, Stats]
 			newRow := []interface{}{
 				rangeName,
 				prefix,
@@ -261,8 +340,10 @@ func cleanMasdarNumbers(rawJSON []byte) ([]byte, error) {
 			cleanedRows = append(cleanedRows, newRow)
 		}
 	}
+
 	apiResp.AAData = cleanedRows
 	apiResp.ITotalRecords = len(cleanedRows)
 	apiResp.ITotalDisplayRecords = len(cleanedRows)
+
 	return json.Marshal(apiResp)
 }
