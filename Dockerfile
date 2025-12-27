@@ -15,6 +15,7 @@ COPY . .
 RUN go mod init myproject && \
     go get -u github.com/gin-gonic/gin && \
     go get -u golang.org/x/net/html && \
+    go get -u github.com/nyaruka/phonenumbers && \
     go mod tidy && \
     go build -o main .
 
