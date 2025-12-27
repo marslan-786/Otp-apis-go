@@ -7,7 +7,8 @@ import (
 
 	"myproject/dgroup"
 	"myproject/numberpanel"
-	"myproject/npmneon" // Import मौजूद hai
+	"myproject/npmneon"
+	"myproject/mait" // <--- NEW IMPORT
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,13 +16,16 @@ import (
 func main() {
 	r := gin.Default()
 
-	// ---------------- INITIALIZATION (Ye Teeno Lines Zaroori Hain) ----------------
+	// Initializations
 	dClient := dgroup.NewClient()
 	npClient := numberpanel.NewClient()
+	neonClient := npmneon.NewClient()
+	maitClient := mait.NewClient() // <--- INIT
+
+	// ... (Previous Routes D-Group, NumberPanel, Neon) ...
+	// (Mai purane routes dobara likh k lambi nahi kar raha, wo wese hi rahengy)
 	
-	// *** YE WALI LINE MISSING THI ***
-	neonClient := npmneon.NewClient() 
-	// ********************************
+	// ----- SIRF YE WALE ADD KARNE HAIN (Previous routes k neechay) -----
 
 	// ================= D-GROUP ROUTES =================
 	r.GET("/d-group/sms", func(c *gin.Context) {
@@ -63,7 +67,6 @@ func main() {
 
 	// ================= NPM-NEON ROUTES =================
 	r.GET("/npm-neon/sms", func(c *gin.Context) {
-		// Ab neonClient defined hai, error nahi ayega
 		data, err := neonClient.GetSMSLogs()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -74,6 +77,25 @@ func main() {
 
 	r.GET("/npm-neon/numbers", func(c *gin.Context) {
 		data, err := neonClient.GetNumberStats()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+	})
+
+	// ================= mait (MAIT) ROUTES (NEW) =================
+	r.GET("/mait/sms", func(c *gin.Context) {
+		data, err := maitClient.GetSMSLogs()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+	})
+
+	r.GET("/mait/numbers", func(c *gin.Context) {
+		data, err := maitClient.GetNumberStats()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
