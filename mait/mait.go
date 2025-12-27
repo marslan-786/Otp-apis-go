@@ -38,6 +38,7 @@ type ApiResponse struct {
 type Client struct {
 	HTTPClient *http.Client
 	SessKey    string
+	Csstr      string // This is the MAIN token for this panel
 	Mutex      sync.Mutex
 }
 
@@ -51,11 +52,12 @@ func NewClient() *Client {
 	}
 }
 
+// ensureSession: Ab ye Check karega k SessKey YA Csstr me se kuch bhi ho
 func (c *Client) ensureSession() error {
-	if c.SessKey != "" {
+	if c.SessKey != "" || c.Csstr != "" {
 		return nil
 	}
-	fmt.Println("[Masdar] Session Key missing, Login start...")
+	fmt.Println("[Masdar] No Tokens found (sesskey/csstr), Login start...")
 	return c.performLogin()
 }
 
@@ -102,8 +104,8 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 
-	// Step 4: Get SessKey
-	fmt.Println("[Masdar] >> Step 3: Getting SessKey")
+	// Step 4: Get Tokens (Csstr is Priority)
+	fmt.Println("[Masdar] >> Step 3: Getting Tokens")
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
 	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 
@@ -113,29 +115,39 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 	reportBody, _ := io.ReadAll(resp.Body)
+	reportString := string(reportBody)
 	
-	// Unlike Neon, Masdar seems to use 'API Token' in HTML or sesskey in URL.
-	// Based on your previous logs: sesskey=XH-MekZQVTxCT09ERA== (Wait, that looks like API Token format)
-	// But in your request log: sesskey=5h540dk2drf3gfl4npdf94hr4c (This is PHPSESSID in cookie, odd)
-	// Let's rely on Cookie for Auth, but if URL needs token we extract "API Token" from HTML sidebar.
-	
-	// Trying to extract API Token from Sidebar HTML: "API Token : XH-MekZQVTxCT09ERA=="
-	tokenRe := regexp.MustCompile(`API Token : ([a-zA-Z0-9\-\_\=\+]+)`)
-	tokenMatch := tokenRe.FindStringSubmatch(string(reportBody))
-	
-	if len(tokenMatch) > 1 {
-		c.SessKey = tokenMatch[1]
-		fmt.Println("[Masdar] API Token Found:", c.SessKey)
-	} else {
-		// Fallback: Sometimes sesskey is just not needed if cookie is there, 
-		// but let's try standard sesskey regex too just in case.
-		sessRe := regexp.MustCompile(`sesskey=([a-zA-Z0-9%=]+)`)
-		sessMatch := sessRe.FindStringSubmatch(string(reportBody))
-		if len(sessMatch) > 1 {
-			c.SessKey = sessMatch[1]
-		} else {
-			fmt.Println("[Masdar] Warning: Token not found, proceeding with Cookie only.")
+	// 1. Find 'csstr' (Most Important for this panel)
+	csstrRe := regexp.MustCompile(`csstr=([^"&']+)`)
+	csstrMatch := csstrRe.FindStringSubmatch(reportString)
+	if len(csstrMatch) > 1 {
+		c.Csstr = csstrMatch[1]
+		fmt.Println("[Masdar] SUCCESS: Found Csstr:", c.Csstr)
+	}
+
+	// 2. Find 'sesskey' (Just in case)
+	sessRe := regexp.MustCompile(`sesskey=([^"&']+)`)
+	sessMatch := sessRe.FindStringSubmatch(reportString)
+	if len(sessMatch) > 1 {
+		c.SessKey = sessMatch[1]
+		fmt.Println("[Masdar] Found SessKey:", c.SessKey)
+	}
+
+	// 3. Fallback: Sidebar API Token
+	if c.SessKey == "" && c.Csstr == "" {
+		tokenRe := regexp.MustCompile(`API Token\s*:\s*([a-zA-Z0-9\-\_\=\+]+)`)
+		tokenMatch := tokenRe.FindStringSubmatch(reportString)
+		if len(tokenMatch) > 1 {
+			c.SessKey = tokenMatch[1] // Use API token as sesskey fallback
+			fmt.Println("[Masdar] Found API Token (Sidebar):", c.SessKey)
 		}
+	}
+
+	// FINAL CHECK: Agar dono khaali hain to warning, warna OK
+	if c.SessKey == "" && c.Csstr == "" {
+		fmt.Println("[Masdar] Warning: No Token found. Using Cookies only.")
+	} else {
+		fmt.Println("[Masdar] Login & Token Extraction Complete.")
 	}
 
 	return nil
@@ -153,7 +165,6 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		}
 
 		now := time.Now()
-		// Fixed Start Date Logic (1st of Month)
 		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
 		fdate2 := now.Format("2006-01-02") + " 23:59:59"
@@ -164,8 +175,15 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		params.Set("fg", "0")
-		// Masdar might use 'csstr' token based on logs, but usually cookies work. 
-		// We will try without first.
+		
+		// Send whatever we have
+		if c.SessKey != "" {
+			params.Set("sesskey", c.SessKey)
+		}
+		if c.Csstr != "" {
+			params.Set("csstr", c.Csstr)
+		}
+
 		params.Set("sEcho", "3")
 		params.Set("iDisplayLength", "100") 
 		params.Set("iSortingCols", "1")
@@ -186,12 +204,13 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		body, _ := io.ReadAll(resp.Body)
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			c.SessKey = "" // Reset
+			fmt.Println("[Masdar] HTML detected (Session Expired), Retrying...")
+			c.SessKey = ""
+			c.Csstr = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
 		}
 
-		// Clean Data
 		cleanedJSON, err := cleanMasdarSMS(body)
 		if err != nil {
 			return nil, err
@@ -212,7 +231,6 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 			msg, ok := row[5].(string)
 			if ok {
 				cleanMsg := html.UnescapeString(msg)
-				// Remove specific Masdar junk if any
 				apiResp.AAData[i][5] = cleanMsg
 			}
 		}
@@ -234,6 +252,14 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		params := url.Values{}
 		params.Set("frange", "")
 		params.Set("fclient", "")
+		
+		if c.SessKey != "" {
+			params.Set("sesskey", c.SessKey)
+		}
+		if c.Csstr != "" {
+			params.Set("csstr", c.Csstr)
+		}
+
 		params.Set("sEcho", "2")
 		params.Set("iDisplayLength", "-1") // Fetch All
 		params.Set("iSortingCols", "1")
@@ -255,6 +281,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
 			c.SessKey = ""
+			c.Csstr = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
 		}
@@ -278,7 +305,6 @@ func cleanMasdarNumbers(rawJSON []byte) ([]byte, error) {
 	rePrice := regexp.MustCompile(`[\d\.]+`)
 
 	for _, row := range apiResp.AAData {
-		// Raw: [Checkbox, RangeName, Prefix, Number, PriceHTML, Action, Empty, Stats]
 		if len(row) > 4 {
 			number := row[3] // Index 3 is Number
 			
