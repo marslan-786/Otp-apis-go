@@ -1,4 +1,4 @@
-package mait
+package masdar
 
 import (
 	"bytes"
@@ -37,8 +37,7 @@ type ApiResponse struct {
 
 type Client struct {
 	HTTPClient *http.Client
-	SessKey    string
-	Csstr      string // This is the MAIN token for this panel
+	Csstr      string // Sirf yehi token chahiye ab
 	Mutex      sync.Mutex
 }
 
@@ -52,12 +51,12 @@ func NewClient() *Client {
 	}
 }
 
-// ensureSession: Ab ye Check karega k SessKey YA Csstr me se kuch bhi ho
+// ensureSession: Ab sirf Csstr check karega
 func (c *Client) ensureSession() error {
-	if c.SessKey != "" || c.Csstr != "" {
+	if c.Csstr != "" {
 		return nil
 	}
-	fmt.Println("[Masdar] No Tokens found (sesskey/csstr), Login start...")
+	fmt.Println("[Masdar] Csstr token missing, Login start...")
 	return c.performLogin()
 }
 
@@ -104,8 +103,8 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 
-	// Step 4: Get Tokens (Csstr is Priority)
-	fmt.Println("[Masdar] >> Step 3: Getting Tokens")
+	// Step 4: Get Only Csstr
+	fmt.Println("[Masdar] >> Step 3: Getting Csstr Token")
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
 	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 
@@ -117,37 +116,24 @@ func (c *Client) performLogin() error {
 	reportBody, _ := io.ReadAll(resp.Body)
 	reportString := string(reportBody)
 	
-	// 1. Find 'csstr' (Most Important for this panel)
+	// Regex specifically for 'csstr'
+	// HTML me aksar aisa hota hai: var csstr = "xyz"; ya link me csstr=xyz
 	csstrRe := regexp.MustCompile(`csstr=([^"&']+)`)
 	csstrMatch := csstrRe.FindStringSubmatch(reportString)
+	
 	if len(csstrMatch) > 1 {
 		c.Csstr = csstrMatch[1]
 		fmt.Println("[Masdar] SUCCESS: Found Csstr:", c.Csstr)
-	}
-
-	// 2. Find 'sesskey' (Just in case)
-	sessRe := regexp.MustCompile(`sesskey=([^"&']+)`)
-	sessMatch := sessRe.FindStringSubmatch(reportString)
-	if len(sessMatch) > 1 {
-		c.SessKey = sessMatch[1]
-		fmt.Println("[Masdar] Found SessKey:", c.SessKey)
-	}
-
-	// 3. Fallback: Sidebar API Token
-	if c.SessKey == "" && c.Csstr == "" {
-		tokenRe := regexp.MustCompile(`API Token\s*:\s*([a-zA-Z0-9\-\_\=\+]+)`)
-		tokenMatch := tokenRe.FindStringSubmatch(reportString)
-		if len(tokenMatch) > 1 {
-			c.SessKey = tokenMatch[1] // Use API token as sesskey fallback
-			fmt.Println("[Masdar] Found API Token (Sidebar):", c.SessKey)
-		}
-	}
-
-	// FINAL CHECK: Agar dono khaali hain to warning, warna OK
-	if c.SessKey == "" && c.Csstr == "" {
-		fmt.Println("[Masdar] Warning: No Token found. Using Cookies only.")
 	} else {
-		fmt.Println("[Masdar] Login & Token Extraction Complete.")
+		// Fallback regex incase format is different like: "csstr":"xyz"
+		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']([^"']+)["']`)
+		match2 := fallbackRe.FindStringSubmatch(reportString)
+		if len(match2) > 1 {
+			c.Csstr = match2[1]
+			fmt.Println("[Masdar] SUCCESS: Found Csstr (Fallback):", c.Csstr)
+		} else {
+			fmt.Println("[Masdar] Warning: Csstr not found! API calls might fail.")
+		}
 	}
 
 	return nil
@@ -165,6 +151,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		}
 
 		now := time.Now()
+		// Fixed Start Date Logic (1st of Month)
 		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
 		fdate2 := now.Format("2006-01-02") + " 23:59:59"
@@ -176,10 +163,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("fclient", "")
 		params.Set("fg", "0")
 		
-		// Send whatever we have
-		if c.SessKey != "" {
-			params.Set("sesskey", c.SessKey)
-		}
+		// Only setting csstr as requested
 		if c.Csstr != "" {
 			params.Set("csstr", c.Csstr)
 		}
@@ -205,12 +189,12 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
 			fmt.Println("[Masdar] HTML detected (Session Expired), Retrying...")
-			c.SessKey = ""
-			c.Csstr = ""
+			c.Csstr = "" // Reset Token
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
 		}
 
+		// Clean Data
 		cleanedJSON, err := cleanMasdarSMS(body)
 		if err != nil {
 			return nil, err
@@ -253,9 +237,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		
-		if c.SessKey != "" {
-			params.Set("sesskey", c.SessKey)
-		}
+		// Only setting csstr
 		if c.Csstr != "" {
 			params.Set("csstr", c.Csstr)
 		}
@@ -280,7 +262,6 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		body, _ := io.ReadAll(resp.Body)
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			c.SessKey = ""
 			c.Csstr = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
@@ -305,6 +286,7 @@ func cleanMasdarNumbers(rawJSON []byte) ([]byte, error) {
 	rePrice := regexp.MustCompile(`[\d\.]+`)
 
 	for _, row := range apiResp.AAData {
+		// Raw: [Checkbox, RangeName, Prefix, Number, PriceHTML, Action, Empty, Stats]
 		if len(row) > 4 {
 			number := row[3] // Index 3 is Number
 			
