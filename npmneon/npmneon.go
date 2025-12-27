@@ -23,16 +23,15 @@ const (
 	LoginURL     = BaseURL + "/ints/login"
 	SigninURL    = BaseURL + "/ints/signin"
 	SMSApiURL    = BaseURL + "/ints/agent/res/data_smscdr.php"
-	NumberApiURL = BaseURL + "/ints/agent/res/data_smsnumbers.php" // Note: This is inventory list, not stats
+	NumberApiURL = BaseURL + "/ints/agent/res/data_smsnumbers.php"
 )
 
 type Client struct {
 	HTTPClient *http.Client
 	Mutex      sync.Mutex
-	// Is panel me sesskey URL me nahi chahiye hoti, sirf cookie kafi hai
 }
 
-// JSON Response Wrapper to intercept and clean data
+// JSON Response Wrapper
 type ApiResponse struct {
 	SEcho                interface{}     `json:"sEcho"`
 	ITotalRecords        interface{}     `json:"iTotalRecords"`
@@ -55,7 +54,6 @@ func (c *Client) ensureSession() error {
 	u, _ := url.Parse(BaseURL)
 	cookies := c.HTTPClient.Jar.Cookies(u)
 	if len(cookies) > 0 {
-		// Assume session is valid if cookies exist
 		return nil
 	}
 	fmt.Println("[NPM-Neon] No cookies found. Logging in...")
@@ -105,7 +103,6 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 
-	// Check if login successful (by checking redirect or cookie)
 	u, _ := url.Parse(BaseURL)
 	if len(c.HTTPClient.Jar.Cookies(u)) == 0 {
 		return errors.New("login failed: no cookies received")
@@ -125,21 +122,16 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
-		// --- DATE LOGIC CHANGED HERE ---
+		// --- DATE LOGIC (1st of Month to Today) ---
 		now := time.Now()
-		
-		// Start Date: Current Month's 1st Day (e.g., 2025-12-01 00:00:00)
 		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
-
-		// End Date: Today's Date till End of Day (e.g., 2025-12-28 23:59:59)
 		fdate2 := now.Format("2006-01-02") + " 23:59:59"
 
 		params := url.Values{}
-		params.Set("fdate1", fdate1) // Fixed to 1st of Month
-		params.Set("fdate2", fdate2) // Dynamic Today
+		params.Set("fdate1", fdate1)
+		params.Set("fdate2", fdate2)
 		
-		// Baqi params same rahengy
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		params.Set("fg", "0") 
@@ -149,7 +141,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("sSortDir_0", "desc")
 
 		finalURL := SMSApiURL + "?" + params.Encode()
-		fmt.Println("[NPM-Neon] Fetching SMS (From 1st to Now)...")
+		fmt.Println("[NPM-Neon] Fetching SMS...")
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
@@ -163,49 +155,59 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		body, _ := io.ReadAll(resp.Body)
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			// Session expired logic
-			c.HTTPClient.Jar, _ = cookiejar.New(nil) // Clear cookies
+			c.HTTPClient.Jar, _ = cookiejar.New(nil) // Reset Session
 			continue
 		}
 
-		// --- CLEANING START ---
 		cleanedJSON, err := cleanSMSData(body)
 		if err != nil {
 			return nil, err 
 		}
-		// --- CLEANING END ---
-
 		return cleanedJSON, nil
 	}
 	return nil, errors.New("failed after retry")
 }
 
-
 func cleanSMSData(rawJSON []byte) ([]byte, error) {
 	var apiResp ApiResponse
 	if err := json.Unmarshal(rawJSON, &apiResp); err != nil {
-		return rawJSON, nil // If not JSON (maybe error msg), return raw
+		return rawJSON, nil
 	}
 
-	// Loop through rows
-	for i, row := range apiResp.AAData {
-		if len(row) > 5 {
-			// Index 5 is the Message. 
-			// Raw: "Akun... &lt;#&gt;... nCode..."
-			msg, ok := row[5].(string)
-			if ok {
-				// 1. Unescape HTML ( &lt; -> < )
-				cleanMsg := html.UnescapeString(msg)
-				// 2. Remove Specific Trash
-				cleanMsg = strings.ReplaceAll(cleanMsg, "n", " ") // Often 'n' appears as newline artifact
-				cleanMsg = strings.ReplaceAll(cleanMsg, "<#>", "") 
-				
-				// Update the row
-				apiResp.AAData[i][5] = cleanMsg
+	var cleanedRows [][]interface{}
+
+	// Raw Neon: [Date(0), Country(1), Number(2), Service(3), User(4), Message(5), Cost(6), Status(7), ...]
+	// Target: [Date, Country, Number, Service, Message, Currency, Cost, Status] (No User)
+
+	for _, row := range apiResp.AAData {
+		if len(row) > 8 {
+			// Message Cleanup (Index 5)
+			msg, _ := row[5].(string)
+			
+			// 1. Unescape HTML
+			msg = html.UnescapeString(msg)
+			
+			// 2. Remove Junk
+			msg = strings.ReplaceAll(msg, "<#>", "")
+			msg = strings.ReplaceAll(msg, "null", "") // Remove literal "null" text
+			msg = strings.TrimSpace(msg) // Remove extra spaces/newlines
+
+			// Construct New Row (Skipping Index 4: User)
+			newRow := []interface{}{
+				row[0], // Date
+				row[1], // Country
+				row[2], // Number
+				row[3], // Service
+				msg,    // Message (Moved up)
+				row[6], // Currency (Usually $)
+				row[7], // Cost
+				row[8], // Status
 			}
+			cleanedRows = append(cleanedRows, newRow)
 		}
 	}
 
+	apiResp.AAData = cleanedRows
 	return json.Marshal(apiResp)
 }
 
@@ -220,7 +222,6 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
-		// Numbers API params
 		params := url.Values{}
 		params.Set("sEcho", "1")
 		params.Set("iDisplayLength", "-1") // Fetch All
@@ -246,13 +247,10 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			continue
 		}
 
-		// --- CLEANING START ---
 		cleanedJSON, err := cleanNumberData(body)
 		if err != nil {
 			return nil, err
 		}
-		// --- CLEANING END ---
-
 		return cleanedJSON, nil
 	}
 	return nil, errors.New("failed after retry")
@@ -264,54 +262,54 @@ func cleanNumberData(rawJSON []byte) ([]byte, error) {
 		return rawJSON, nil
 	}
 
-	// New Clean Data Array to match D-Group format: [Number, Count, Currency, Price, 0]
-	// Raw Neon format: [Checkbox, Country, Prefix, Number, PriceHTML, Action, Empty, Stats]
 	var cleanedRows [][]interface{}
-
-	rePrice := regexp.MustCompile(`[\d\.]+`) // Extracts numbers like 0.01
+	rePrice := regexp.MustCompile(`[\d\.]+`)
 
 	for _, row := range apiResp.AAData {
-		if len(row) > 4 {
-			// Extract Number (Index 3)
+		// Raw Neon: [Checkbox(0), RangeName(1), Prefix(2), Number(3), PriceHTML(4), Action(5), Empty(6), Stats(7)]
+		if len(row) > 7 {
+			rangeName := row[1]
+			prefix := row[2]
 			number := row[3]
-
-			// Extract Price (Index 4): "Monthly30<br /><b>\u20ac 0.01</b>"
-			rawPrice, _ := row[4].(string)
 			
-			// Detect Currency
+			// Price & Type Analysis
+			rawPrice, _ := row[4].(string)
+			billingType := "Weekly" // Default
+			if strings.Contains(strings.ToLower(rawPrice), "monthly") {
+				billingType = "Monthly"
+			}
+
 			currency := "$"
-			if strings.Contains(rawPrice, "\u20ac") || strings.Contains(rawPrice, "€") {
+			if strings.Contains(rawPrice, "€") {
 				currency = "€"
 			} else if strings.Contains(rawPrice, "£") {
 				currency = "£"
 			}
 
-			// Extract numerical price
-			priceMatches := rePrice.FindAllString(rawPrice, -1)
-			price := 0.0
-			if len(priceMatches) > 0 {
-				// usually the last number is the price (e.g. "30" then "0.01")
-				lastVal := priceMatches[len(priceMatches)-1]
-				p, _ := strconv.ParseFloat(lastVal, 64)
-				price = p
+			priceVal := "0"
+			matches := rePrice.FindAllString(rawPrice, -1)
+			if len(matches) > 0 {
+				priceVal = matches[len(matches)-1]
 			}
+			priceStr := currency + " " + priceVal
 
-			// Construct D-Group Style Row
-			// [Number, Count(1), Currency, Price, 0]
+			// Stats (SD/SW counts)
+			stats := row[7]
+
+			// Final Format: [Country, Prefix, Number, Type, Price, Stats]
 			newRow := []interface{}{
+				rangeName,
+				prefix,
 				number,
-				"1", // D-Group usually has count here. Since this is inventory, assume 1.
-				currency,
-				price,
-				0,
+				billingType,
+				priceStr,
+				stats,
 			}
 			cleanedRows = append(cleanedRows, newRow)
 		}
 	}
 
-	// Update the response with new cleaned structure
 	apiResp.AAData = cleanedRows
-	// Update records count if filtered
 	apiResp.ITotalRecords = len(cleanedRows)
 	apiResp.ITotalDisplayRecords = len(cleanedRows)
 
