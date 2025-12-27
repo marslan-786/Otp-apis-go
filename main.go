@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
-	
-	// Import ese karna hai: "ProjectName / FolderName"
+	"os" // <--- Ye Import lazmi add krna
+
 	"myproject/dgroup"
 
 	"github.com/gin-gonic/gin"
@@ -13,12 +13,9 @@ import (
 func main() {
 	r := gin.Default()
 
-	// Initialize D-Group Logic (Background Memory starts here)
 	dClient := dgroup.NewClient()
 
-	// ------------------ D-GROUP ROUTES ------------------
 	r.GET("/d-group/sms", func(c *gin.Context) {
-		// Ye function automatically alag thread (Goroutine) me chalta hai Gin k andar
 		data, err := dClient.GetSMSLogs()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -36,10 +33,17 @@ func main() {
 		c.Data(http.StatusOK, "application/json", data)
 	})
 
-	// Future: Yahan hum mazeed panels add karengy
-	// himalayaClient := himalaya.NewClient()
-	// r.GET("/himalaya/sms", ...)
+	// ---------------------------------------------------------
+	// PORT FIX FOR RAILWAY
+	// Railway automatically injects a PORT env var.
+	// We must listen on THAT port, not just 8080.
+	// ---------------------------------------------------------
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Localhost k liye fallback
+	}
 
-	log.Println("Server running on port 8080")
-	r.Run(":8080")
+	log.Println("Server running on port: " + port)
+	// 0.0.0.0 lagana zaroori hai ta k external traffic accept kare
+	r.Run("0.0.0.0:" + port) 
 }
