@@ -8,6 +8,7 @@ import (
 	// Dono packages import karein
 	"myproject/dgroup"
 	"myproject/numberpanel" // <--- NEW IMPORT
+	"myproject/npmneon"
 
 	"github.com/gin-gonic/gin"
 )
@@ -58,8 +59,28 @@ func main() {
 		}
 		c.Data(http.StatusOK, "application/json", data)
 	})
+	
+	
+	r.GET("/npm-neon/sms", func(c *gin.Context) {
+		data, err := neonClient.GetSMSLogs()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// Ab data clean ho kar JSON format me hi jayega
+		c.Data(http.StatusOK, "application/json", data)
+	})
 
-	// ================= SERVER START =================
+	r.GET("/npm-neon/numbers", func(c *gin.Context) {
+		data, err := neonClient.GetNumberStats()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+	})
+
+	// Server Start Logic
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
