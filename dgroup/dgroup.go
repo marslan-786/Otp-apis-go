@@ -44,15 +44,38 @@ type Client struct {
 	Mutex      sync.Mutex
 }
 
-func NewClient() *Client {
+// =========================================================
+// GLOBAL RAM STORAGE (Specific to 'dgroup' package ONLY)
+// =========================================================
+var (
+	activeClient *Client    // یہ ویری ایبل صرف D-Group کا سیشن سنبھالے گا
+	clientMutex  sync.Mutex // تھریڈ سیفٹی کے لیے
+)
+
+// GetSession: یہ فنکشن ہر بار وہی پرانا کلائنٹ واپس کرے گا (RAM سے)
+func GetSession() *Client {
+	clientMutex.Lock()
+	defer clientMutex.Unlock()
+
+	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو
+	if activeClient != nil {
+		return activeClient
+	}
+
+	// اگر پہلی بار کال ہو رہا ہے تو نیا بناؤ اور محفوظ کر لو
 	jar, _ := cookiejar.New(nil)
-	return &Client{
+	activeClient = &Client{
 		HTTPClient: &http.Client{
 			Jar:     jar,
 			Timeout: 60 * time.Second,
 		},
 	}
+	return activeClient
 }
+
+// ---------------------------------------------------------
+// LOGIN LOGIC (Hardcoded Credentials)
+// ---------------------------------------------------------
 
 func (c *Client) ensureSession() error {
 	if c.SessKey != "" {
@@ -85,10 +108,10 @@ func (c *Client) performLogin() error {
 	captchaAns := strconv.Itoa(n1 + n2)
 	fmt.Printf("[D-Group] Captcha Solved: %s\n", captchaAns)
 
-	// Login Post
+	// Login Post (HARDCODED CREDENTIALS KEPT)
 	data := url.Values{}
-	data.Set("username", "Kami526")
-	data.Set("password", "Kamran5.")
+	data.Set("username", "Kami526")  // Hardcoded User
+	data.Set("password", "Kamran5.") // Hardcoded Pass
 	data.Set("capt", captchaAns)
 
 	loginReq, _ := http.NewRequest("POST", SigninURL, bytes.NewBufferString(data.Encode()))
@@ -114,7 +137,7 @@ func (c *Client) performLogin() error {
 	sessMatch := sessRe.FindStringSubmatch(string(rBody))
 	
 	if len(sessMatch) > 1 {
-		c.SessKey = sessMatch[1]
+		c.SessKey = sessMatch[1] // SAVED TO RAM OBJECT
 		fmt.Println("[D-Group] Found SessKey:", c.SessKey)
 	} else {
 		return errors.New("sesskey not found")
@@ -123,7 +146,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS LOGIC (Removing User) ----------------------
+// ---------------------- SMS LOGIC ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -141,7 +164,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params := url.Values{}
 		params.Set("fdate1", startDate.Format("2006-01-02")+" 00:00:00")
 		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
-		params.Set("sesskey", c.SessKey)
+		params.Set("sesskey", c.SessKey) // Using saved SessKey
 		params.Set("sEcho", "3")
 		params.Set("iDisplayLength", "100")
 		params.Set("iSortingCols", "1")
@@ -158,10 +181,12 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
+		// Check Session Expiry
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			c.SessKey = ""
+			fmt.Println("[D-Group] Session Expired. Re-logging...")
+			c.SessKey = "" // Reset Key
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
-			continue
+			continue // Retry loop will login again
 		}
 
 		return cleanDGroupSMS(body)
@@ -202,7 +227,7 @@ func cleanDGroupSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS LOGIC (Adding Country & Prefix) ----------------------
+// ---------------------- NUMBERS LOGIC ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -232,6 +257,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		body, _ := io.ReadAll(resp.Body)
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
+			fmt.Println("[D-Group] Session Expired (Numbers). Re-logging...")
 			c.SessKey = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
@@ -304,7 +330,6 @@ func processNumbersWithCountry(rawJSON []byte) ([]byte, error) {
 }
 
 // Helper to map Region Codes (ISO 2 char) to Full Names
-// Adding major countries relevant to OTP panels. Add more if needed.
 func getCountryName(code string) string {
 	code = strings.ToUpper(code)
 	countries := map[string]string{
@@ -334,5 +359,5 @@ func getCountryName(code string) string {
 	if name, ok := countries[code]; ok {
 		return name
 	}
-	return code // Return code (e.g. VE) if full name not found
+	return code
 }
