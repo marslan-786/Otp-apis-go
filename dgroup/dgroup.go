@@ -25,9 +25,9 @@ const (
 	BaseURL      = "http://139.99.63.204"
 	LoginURL     = BaseURL + "/ints/login"
 	SigninURL    = BaseURL + "/ints/signin"
-	ReportsPage  = BaseURL + "/ints/agent/SMSCDRReports"
-	SMSApiURL    = BaseURL + "/ints/agent/res/data_smscdr.php"
-	NumberApiURL = BaseURL + "/ints/agent/res/data_smsnumberstats.php" // Stats API
+	ReportsPage  = BaseURL + "/ints/client/SMSCDRReports"
+	SMSApiURL    = BaseURL + "/ints/client/res/data_smscdr.php"
+	NumberApiURL = BaseURL + "/ints/client/res/data_smsnumberstats.php" // Stats API
 )
 
 // Wrapper for JSON Response
@@ -87,7 +87,7 @@ func (c *Client) ensureSession() error {
 func (c *Client) performLogin() error {
 	fmt.Println("[D-Group] >> Step 1: Login Page")
 	req, _ := http.NewRequest("GET", LoginURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+	req.Header.Set("User-client", "Mozilla/5.0 (Linux; Android 10; K)")
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -110,13 +110,13 @@ func (c *Client) performLogin() error {
 
 	// Login Post (HARDCODED CREDENTIALS KEPT)
 	data := url.Values{}
-	data.Set("username", "Kami526")  // Hardcoded User
-	data.Set("password", "Kamran5.") // Hardcoded Pass
+	data.Set("username", "Kami527")  // Hardcoded User
+	data.Set("password", "Kami526") // Hardcoded Pass
 	data.Set("capt", captchaAns)
 
 	loginReq, _ := http.NewRequest("POST", SigninURL, bytes.NewBufferString(data.Encode()))
 	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	loginReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+	loginReq.Header.Set("User-client", "Mozilla/5.0 (Linux; Android 10; K)")
 	resp, err = c.HTTPClient.Do(loginReq)
 	if err != nil {
 		return err
@@ -125,7 +125,7 @@ func (c *Client) performLogin() error {
 
 	// Get SessKey
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
-	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+	reportReq.Header.Set("User-client", "Mozilla/5.0 (Linux; Android 10; K)")
 	resp, err = c.HTTPClient.Do(reportReq)
 	if err != nil {
 		return err
@@ -175,7 +175,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("sSortDir_0", "desc")
 
 		req, _ := http.NewRequest("GET", SMSApiURL+"?"+params.Encode(), nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+		req.Header.Set("User-client", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 		resp, err := c.HTTPClient.Do(req)
@@ -285,9 +285,9 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		fullURL := NumberApiURL + "?" + params.Encode()
 
 		req, _ := http.NewRequest("GET", fullURL, nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+		req.Header.Set("User-client", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
-		req.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
+		req.Header.Set("Referer", BaseURL+"/ints/client/MySMSNumbers")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
