@@ -146,7 +146,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS LOGIC ----------------------
+// ---------------------- SMS LOGIC (Updated Date Range) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -157,14 +157,20 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
+		// --- NEW DATE LOGIC ---
+		// Start Date: Yesterday (Current Day - 1)
+		// End Date: Tomorrow (Current Day + 1)
 		now := time.Now()
-		// Start Date: 1st of Current Month
-		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		
+		yesterday := now.AddDate(0, 0, -1)
+		tomorrow := now.AddDate(0, 0, 1)
+
+		fdate1 := yesterday.Format("2006-01-02") + " 00:00:00"
+		fdate2 := tomorrow.Format("2006-01-02") + " 23:59:59"
+
 		params := url.Values{}
-		params.Set("fdate1", startDate.Format("2006-01-02")+" 00:00:00")
-		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
-		params.Set("sesskey", c.SessKey) // Using saved SessKey
+		params.Set("fdate1", fdate1)
+		params.Set("fdate2", fdate2)
+		params.Set("sesskey", c.SessKey)
 		params.Set("sEcho", "3")
 		params.Set("iDisplayLength", "100")
 		params.Set("iSortingCols", "1")
@@ -227,7 +233,7 @@ func cleanDGroupSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS LOGIC ----------------------
+// ---------------------- NUMBERS LOGIC (Updated Params) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -238,16 +244,49 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
-		now := time.Now()
+		// --- UPDATED PARAMS FROM RAW REQUEST ---
+		// To ensure "Full Numbers" are returned exactly like the browser
 		params := url.Values{}
+		params.Set("frange", "")
+		params.Set("fclient", "")
+		params.Set("sEcho", "2")
+		params.Set("iColumns", "8")
+		params.Set("sColumns", ",,,,,,,")
+		params.Set("iDisplayStart", "0")
+		params.Set("iDisplayLength", "-1") // -1 Means ALL records (Fixes cut-off issue)
+		
+		// Map Data Props (Matches browser request structure)
+		for j := 0; j < 8; j++ {
+			idx := strconv.Itoa(j)
+			params.Set("mDataProp_"+idx, idx)
+			params.Set("sSearch_"+idx, "")
+			params.Set("bRegex_"+idx, "false")
+			params.Set("bSearchable_"+idx, "true")
+		}
+		
+		// Sort settings
+		params.Set("iSortingCols", "1")
+		params.Set("iSortCol_0", "0")
+		params.Set("sSortDir_0", "asc")
+		params.Set("bRegex", "false")
+		
+		// Add Date/Session (Using same date logic as SMS for consistency, or today)
+		now := time.Now()
 		params.Set("fdate1", now.Format("2006-01-02")+" 00:00:00")
 		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
-		params.Set("sEcho", "2")
-		params.Set("iDisplayLength", "-1")
+		// Note: The raw request didn't show session key in URL params but it might be cookie based or added via JS. 
+		// However, based on previous logic, we check if SessKey is needed. 
+		// D-Group usually relies on Cookies + SessKey in header or params. 
+		// Adding SessKey to params just in case, as previous code did.
+		// If the captured request didn't have sesskey in URL, it relies on the Cookie jar which we have.
+		
+		// Construct URL manually to match specific ordering if needed, or use Encode()
+		fullURL := NumberApiURL + "?" + params.Encode()
 
-		req, _ := http.NewRequest("GET", NumberApiURL+"?"+params.Encode(), nil)
+		req, _ := http.NewRequest("GET", fullURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
