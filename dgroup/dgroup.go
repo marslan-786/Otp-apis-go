@@ -243,7 +243,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		}
 
 		// --- DATE LOGIC: 2025-01-01 to NOW ---
-		fdate1 := "2025-01-01 00:00:00"
+		fdate1 := "2026-01-01 00:00:00"
 		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59"
 
 		params := url.Values{}
