@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"myproject/dgroup"
-	"myproject/numberpanel"
+	"myproject/mait"
 	"myproject/npmneon"
-	"myproject/mait" // <--- NEW IMPORT
+	"myproject/numberpanel"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,16 +16,15 @@ import (
 func main() {
 	r := gin.Default()
 
-	// Initializations
-	dClient := dgroup.NewClient()
-	npClient := numberpanel.NewClient()
-	neonClient := npmneon.NewClient()
-	maitClient := mait.NewClient() // <--- INIT
-
-	// ... (Previous Routes D-Group, NumberPanel, Neon) ...
-	// (Mai purane routes dobara likh k lambi nahi kar raha, wo wese hi rahengy)
+	// =================================================================
+	// اہم تبدیلی: NewClient کی جگہ اب GetSession کال ہوگا
+	// یہ فنکشن اب RAM سے سیشن اٹھائے گا اور ہارڈ کوڈڈ لاگ ان استعمال کرے گا
+	// =================================================================
 	
-	// ----- SIRF YE WALE ADD KARNE HAIN (Previous routes k neechay) -----
+	dClient := dgroup.GetSession()
+	npClient := numberpanel.GetSession()
+	neonClient := npmneon.GetSession()
+	maitClient := mait.GetSession()
 
 	// ================= D-GROUP ROUTES =================
 	r.GET("/d-group/sms", func(c *gin.Context) {
@@ -84,7 +83,7 @@ func main() {
 		c.Data(http.StatusOK, "application/json", data)
 	})
 
-	// ================= mait (MAIT) ROUTES (NEW) =================
+	// ================= MAIT (Masdar) ROUTES =================
 	r.GET("/mait/sms", func(c *gin.Context) {
 		data, err := maitClient.GetSMSLogs()
 		if err != nil {
