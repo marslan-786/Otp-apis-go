@@ -39,17 +39,40 @@ type ApiResponse struct {
 	AAData               [][]interface{} `json:"aaData"`
 }
 
-func NewClient() *Client {
+// =========================================================
+// GLOBAL RAM STORAGE (Specific to 'npmneon' package ONLY)
+// =========================================================
+var (
+	activeClient *Client    // یہ ویری ایبل صرف NPM-Neon کا سیشن سنبھالے گا
+	clientMutex  sync.Mutex // تھریڈ سیفٹی کے لیے
+)
+
+// GetSession: یہ فنکشن ہر بار وہی پرانا کلائنٹ واپس کرے گا (RAM سے)
+func GetSession() *Client {
+	clientMutex.Lock()
+	defer clientMutex.Unlock()
+
+	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو
+	if activeClient != nil {
+		return activeClient
+	}
+
+	// اگر پہلی بار کال ہو رہا ہے تو نیا بناؤ اور محفوظ کر لو
 	jar, _ := cookiejar.New(nil)
-	return &Client{
+	activeClient = &Client{
 		HTTPClient: &http.Client{
 			Jar:     jar,
 			Timeout: 60 * time.Second,
 		},
 	}
+	return activeClient
 }
 
-// Session check (Cookie Based)
+// ---------------------------------------------------------
+// LOGIN LOGIC (Cookie Based + Hardcoded)
+// ---------------------------------------------------------
+
+// ensureSession: Check if we have valid cookies
 func (c *Client) ensureSession() error {
 	u, _ := url.Parse(BaseURL)
 	cookies := c.HTTPClient.Jar.Cookies(u)
@@ -86,10 +109,10 @@ func (c *Client) performLogin() error {
 	captchaAns := strconv.Itoa(num1 + num2)
 	fmt.Printf("[NPM-Neon] Captcha Solved: %s\n", captchaAns)
 
-	// Step 3: Login POST
+	// Step 3: Login POST (HARDCODED CREDENTIALS)
 	data := url.Values{}
-	data.Set("username", "Kami526")
-	data.Set("password", "Kami526")
+	data.Set("username", "Kami526") // Hardcoded User
+	data.Set("password", "Kami526") // Hardcoded Pass
 	data.Set("capt", captchaAns)
 
 	loginReq, _ := http.NewRequest("POST", SigninURL, bytes.NewBufferString(data.Encode()))
@@ -107,7 +130,7 @@ func (c *Client) performLogin() error {
 	if len(c.HTTPClient.Jar.Cookies(u)) == 0 {
 		return errors.New("login failed: no cookies received")
 	}
-	fmt.Println("[NPM-Neon] Login Successful!")
+	fmt.Println("[NPM-Neon] Login Successful! Session Saved to RAM.")
 	return nil
 }
 
@@ -117,6 +140,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
+	// Retry Loop: Handles Session Expiry
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
 			return nil, err
@@ -141,7 +165,6 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("sSortDir_0", "desc")
 
 		finalURL := SMSApiURL + "?" + params.Encode()
-		fmt.Println("[NPM-Neon] Fetching SMS...")
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
@@ -154,9 +177,11 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
+		// Check Session Expiry
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			c.HTTPClient.Jar, _ = cookiejar.New(nil) // Reset Session
-			continue
+			fmt.Println("[NPM-Neon] Session Expired. Re-logging...")
+			c.HTTPClient.Jar, _ = cookiejar.New(nil) // Reset Cookies
+			continue // Auto Retry
 		}
 
 		cleanedJSON, err := cleanSMSData(body)
@@ -229,7 +254,6 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		params.Set("sSortDir_0", "asc")
 
 		finalURL := NumberApiURL + "?" + params.Encode()
-		fmt.Println("[NPM-Neon] Fetching Numbers...")
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
@@ -243,6 +267,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		body, _ := io.ReadAll(resp.Body)
 
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
+			fmt.Println("[NPM-Neon] Session Expired (Numbers). Re-logging...")
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
 		}
