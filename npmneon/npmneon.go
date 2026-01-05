@@ -134,7 +134,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS CLEANING LOGIC ----------------------
+// ---------------------- SMS CLEANING LOGIC (Updated Date) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -146,11 +146,13 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
-		// --- DATE LOGIC (1st of Month to Today) ---
+		// --- NEW DATE LOGIC (Yesterday to Tomorrow) ---
 		now := time.Now()
-		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
-		fdate2 := now.Format("2006-01-02") + " 23:59:59"
+		yesterday := now.AddDate(0, 0, -1)
+		tomorrow := now.AddDate(0, 0, 1)
+
+		fdate1 := yesterday.Format("2006-01-02") + " 00:00:00"
+		fdate2 := tomorrow.Format("2006-01-02") + " 23:59:59"
 
 		params := url.Values{}
 		params.Set("fdate1", fdate1)
@@ -236,7 +238,7 @@ func cleanSMSData(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING LOGIC ----------------------
+// ---------------------- NUMBERS CLEANING LOGIC (Updated Params) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -247,10 +249,39 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
+		// --- UPDATED PARAMS FROM RAW REQUEST ---
 		params := url.Values{}
-		params.Set("sEcho", "1")
-		params.Set("iDisplayLength", "-1") // Fetch All
+		params.Set("frange", "")
+		params.Set("fclient", "")
+		
+		// Exact Browser Params to fetch FULL list
+		params.Set("sEcho", "2")
+		params.Set("iColumns", "8")
+		params.Set("sColumns", ",,,,,,,")
+		params.Set("iDisplayStart", "0")
+		params.Set("iDisplayLength", "-1") // -1 means ALL Records
+		
+		// Column Maps
+		for j := 0; j < 8; j++ {
+			idx := strconv.Itoa(j)
+			params.Set("mDataProp_"+idx, idx)
+			params.Set("sSearch_"+idx, "")
+			params.Set("bRegex_"+idx, "false")
+			params.Set("bSearchable_"+idx, "true")
+			
+			// Sorting flags based on your raw request
+			// 0=false, 1-6=true, 7=false
+			sortable := "true"
+			if j == 0 || j == 7 {
+				sortable = "false"
+			}
+			params.Set("bSortable_"+idx, sortable)
+		}
+
+		params.Set("sSearch", "")
+		params.Set("bRegex", "false")
 		params.Set("iSortingCols", "1")
+		params.Set("iSortCol_0", "0")
 		params.Set("sSortDir_0", "asc")
 
 		finalURL := NumberApiURL + "?" + params.Encode()
@@ -258,6 +289,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
