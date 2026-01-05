@@ -146,7 +146,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS LOGIC (Updated Date Range) ----------------------
+// ---------------------- SMS LOGIC (Yesterday to Tomorrow) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -157,9 +157,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
-		// --- NEW DATE LOGIC ---
-		// Start Date: Yesterday (Current Day - 1)
-		// End Date: Tomorrow (Current Day + 1)
+		// --- DATE LOGIC: Yesterday to Tomorrow ---
 		now := time.Now()
 		yesterday := now.AddDate(0, 0, -1)
 		tomorrow := now.AddDate(0, 0, 1)
@@ -233,7 +231,7 @@ func cleanDGroupSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS LOGIC (Updated Params) ----------------------
+// ---------------------- NUMBERS LOGIC (EXACT CAPTURE MATCH) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -244,43 +242,46 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
-		// --- UPDATED PARAMS FROM RAW REQUEST ---
-		// To ensure "Full Numbers" are returned exactly like the browser
+		// --- DATE LOGIC: 2025-01-01 to NOW ---
+		fdate1 := "2025-01-01 00:00:00"
+		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59"
+
 		params := url.Values{}
+		params.Set("fdate1", fdate1)
+		params.Set("fdate2", fdate2)
+		
+		// --- PARAMETERS MATCHING RAW CAPTURE EXACTLY ---
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		params.Set("sEcho", "2")
 		params.Set("iColumns", "8")
 		params.Set("sColumns", ",,,,,,,")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "-1") // -1 Means ALL records (Fixes cut-off issue)
+		params.Set("iDisplayLength", "-1") // Fetch ALL
 		
-		// Map Data Props (Matches browser request structure)
+		// Map Data Props exactly as captured
 		for j := 0; j < 8; j++ {
 			idx := strconv.Itoa(j)
 			params.Set("mDataProp_"+idx, idx)
 			params.Set("sSearch_"+idx, "")
 			params.Set("bRegex_"+idx, "false")
 			params.Set("bSearchable_"+idx, "true")
+			
+			// CAPTURE SPECIFIC: Col 0 and 7 are NOT sortable in your raw request
+			if j == 0 || j == 7 {
+				params.Set("bSortable_"+idx, "false")
+			} else {
+				params.Set("bSortable_"+idx, "true")
+			}
 		}
 		
-		// Sort settings
+		params.Set("sSearch", "")
+		params.Set("bRegex", "false")
 		params.Set("iSortingCols", "1")
 		params.Set("iSortCol_0", "0")
 		params.Set("sSortDir_0", "asc")
-		params.Set("bRegex", "false")
 		
-		// Add Date/Session (Using same date logic as SMS for consistency, or today)
-		now := time.Now()
-		params.Set("fdate1", now.Format("2006-01-02")+" 00:00:00")
-		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
-		// Note: The raw request didn't show session key in URL params but it might be cookie based or added via JS. 
-		// However, based on previous logic, we check if SessKey is needed. 
-		// D-Group usually relies on Cookies + SessKey in header or params. 
-		// Adding SessKey to params just in case, as previous code did.
-		// If the captured request didn't have sesskey in URL, it relies on the Cookie jar which we have.
-		
-		// Construct URL manually to match specific ordering if needed, or use Encode()
+		// Construct URL
 		fullURL := NumberApiURL + "?" + params.Encode()
 
 		req, _ := http.NewRequest("GET", fullURL, nil)
