@@ -48,21 +48,19 @@ type Client struct {
 // GLOBAL RAM STORAGE (Specific to 'numberpanel' package)
 // =========================================================
 var (
-	activeClient *Client    // یہ ویری ایبل صرف NumberPanel کا سیشن سنبھالے گا
-	clientMutex  sync.Mutex // تھریڈ سیفٹی کے لیے
+	activeClient *Client    // RAM Session Store
+	clientMutex  sync.Mutex
 )
 
-// GetSession: یہ فنکشن ہر بار وہی پرانا کلائنٹ واپس کرے گا (RAM سے)
+// GetSession: Returns existing client or creates new
 func GetSession() *Client {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
-	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو
 	if activeClient != nil {
 		return activeClient
 	}
 
-	// اگر پہلی بار کال ہو رہا ہے تو نیا بناؤ اور محفوظ کر لو
 	jar, _ := cookiejar.New(nil)
 	activeClient = &Client{
 		HTTPClient: &http.Client{
@@ -153,7 +151,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS CLEANING LOGIC ----------------------
+// ---------------------- SMS CLEANING (Yesterday to Tomorrow) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -164,13 +162,17 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
+		// LOGIC: Yesterday to Tomorrow
 		now := time.Now()
-		// Start Date: 1st of Current Month
-		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		
+		yesterday := now.AddDate(0, 0, -1)
+		tomorrow := now.AddDate(0, 0, 1)
+
+		fdate1 := yesterday.Format("2006-01-02") + " 00:00:00"
+		fdate2 := tomorrow.Format("2006-01-02") + " 23:59:59"
+
 		params := url.Values{}
-		params.Set("fdate1", startDate.Format("2006-01-02")+" 00:00:00")
-		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
+		params.Set("fdate1", fdate1)
+		params.Set("fdate2", fdate2)
 		params.Set("sesskey", c.SessKey)
 		params.Set("sEcho", "2")
 		params.Set("iDisplayLength", "100") 
@@ -190,12 +192,11 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// Check Session Expiry
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
 			fmt.Println("[NumberPanel] Session Expired. Re-logging...")
-			c.SessKey = "" // Reset Key
+			c.SessKey = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
-			continue // Retry loop will login again
+			continue
 		}
 
 		return cleanNumberPanelSMS(body)
@@ -211,7 +212,6 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 
 	var cleanedRows [][]interface{}
 
-	// Raw: [Date, Range, Number, Service, User(4), Message(5), Currency, Cost, Status]
 	for _, row := range apiResp.AAData {
 		if len(row) > 5 {
 			msg, _ := row[5].(string)
@@ -219,15 +219,7 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 			msg = strings.ReplaceAll(msg, "null", "")
 
 			newRow := []interface{}{
-				row[0], // Date
-				row[1], // Range
-				row[2], // Number
-				row[3], // Service
-				// Skipped Index 4 (User)
-				msg,    // Message (Moved Up)
-				row[6], // Currency
-				row[7], // Cost
-				row[8], // Status
+				row[0], row[1], row[2], row[3], msg, row[6], row[7], row[8],
 			}
 			cleanedRows = append(cleanedRows, newRow)
 		}
@@ -236,7 +228,7 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING LOGIC ----------------------
+// ---------------------- NUMBERS CLEANING (2025-01-01 to Today) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -247,21 +239,43 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
-		now := time.Now()
-		// Start Date: 1st of Current Month
-		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		// LOGIC: 2025-01-01 to NOW
+		fdate1 := "2025-01-01 00:00:00"
+		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59"
 
 		params := url.Values{}
-		params.Set("fdate1", startDate.Format("2006-01-02")+" 00:00:00")
-		params.Set("fdate2", now.Format("2006-01-02")+" 23:59:59")
+		params.Set("fdate1", fdate1)
+		params.Set("fdate2", fdate2)
+
+		// Updated Params from your Raw Request
 		params.Set("sEcho", "1")
-		params.Set("iDisplayLength", "-1")
+		params.Set("iColumns", "5")
+		params.Set("sColumns", ",,,,")
+		params.Set("iDisplayStart", "0")
+		params.Set("iDisplayLength", "-1") // Fetch All
+
+		// Map Data Props (0 to 4 based on your request)
+		for j := 0; j < 5; j++ {
+			idx := strconv.Itoa(j)
+			params.Set("mDataProp_"+idx, idx)
+			params.Set("sSearch_"+idx, "")
+			params.Set("bRegex_"+idx, "false")
+			params.Set("bSearchable_"+idx, "true")
+			params.Set("bSortable_"+idx, "true")
+		}
+
+		params.Set("sSearch", "")
+		params.Set("bRegex", "false")
+		params.Set("iSortCol_0", "0")
+		params.Set("sSortDir_0", "desc")
+		params.Set("iSortingCols", "1")
 
 		finalURL := NumberApiURL + "?" + params.Encode()
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Referer", BaseURL+"/NumberPanel/agent/SMSNumberStats")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -291,14 +305,10 @@ func processNumbersWithCountry(rawJSON []byte) ([]byte, error) {
 	var processedRows [][]interface{}
 
 	for _, row := range apiResp.AAData {
-		// Raw: [Number(0), Count(1), Currency(2), Price(3), Status(4)]
 		if len(row) > 0 {
 			fullNumStr, ok := row[0].(string)
-			if !ok {
-				continue
-			}
+			if !ok { continue }
 
-			// Detect Country & Prefix
 			countryName := "Unknown"
 			countryPrefix := ""
 
@@ -314,7 +324,6 @@ func processNumbersWithCountry(rawJSON []byte) ([]byte, error) {
 				countryName = getCountryName(regionCode)
 			}
 
-			// New Row Construction
 			newRow := []interface{}{
 				countryName,   // 0
 				countryPrefix, // 1
@@ -335,17 +344,13 @@ func processNumbersWithCountry(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// Helper to map Region Codes
 func getCountryName(code string) string {
 	code = strings.ToUpper(code)
 	countries := map[string]string{
 		"AF": "Afghanistan", "PK": "Pakistan", "US": "USA", "GB": "United Kingdom",
 		"IN": "India", "BD": "Bangladesh", "CN": "China", "RU": "Russia",
 		"CA": "Canada", "AU": "Australia", "DE": "Germany", "FR": "France",
-		// Add more as needed...
 	}
-	if name, ok := countries[code]; ok {
-		return name
-	}
+	if name, ok := countries[code]; ok { return name }
 	return code
 }
