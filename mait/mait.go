@@ -54,7 +54,7 @@ func GetSession() *Client {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
-	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو (دوبارہ نیو نہیں بنانا)
+	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو
 	if activeClient != nil {
 		return activeClient
 	}
@@ -158,7 +158,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS CLEANING ----------------------
+// ---------------------- SMS CLEANING (Date Logic Updated) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -169,11 +169,13 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
+		// --- NEW DATE LOGIC (Yesterday to Tomorrow) ---
 		now := time.Now()
-		// Fixed Start Date Logic (1st of Month)
-		startDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		fdate1 := startDate.Format("2006-01-02") + " 00:00:00"
-		fdate2 := now.Format("2006-01-02") + " 23:59:59"
+		yesterday := now.AddDate(0, 0, -1)
+		tomorrow := now.AddDate(0, 0, 1)
+
+		fdate1 := yesterday.Format("2006-01-02") + " 00:00:00"
+		fdate2 := tomorrow.Format("2006-01-02") + " 23:59:59"
 
 		params := url.Values{}
 		params.Set("fdate1", fdate1)
@@ -258,7 +260,7 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING ----------------------
+// ---------------------- NUMBERS CLEANING (Params Updated) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -269,6 +271,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
+		// --- UPDATED PARAMS FROM RAW REQUEST ---
 		params := url.Values{}
 		params.Set("frange", "")
 		params.Set("fclient", "")
@@ -277,9 +280,32 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			params.Set("csstr", c.Csstr)
 		}
 
+		// Exact Browser Params to fetch FULL list
 		params.Set("sEcho", "2")
-		params.Set("iDisplayLength", "-1") // Fetch All
+		params.Set("iColumns", "8")
+		params.Set("sColumns", ",,,,,,,")
+		params.Set("iDisplayStart", "0")
+		params.Set("iDisplayLength", "-1") // -1 means ALL Records
+		
+		// Column Maps
+		for j := 0; j < 8; j++ {
+			idx := strconv.Itoa(j)
+			params.Set("mDataProp_"+idx, idx)
+			params.Set("sSearch_"+idx, "")
+			params.Set("bRegex_"+idx, "false")
+			params.Set("bSearchable_"+idx, "true")
+			
+			// Some cols are sortable, some not in your raw request, 
+			// usually setting all to true doesn't hurt, but let's stick to standard
+			params.Set("bSortable_"+idx, "true")
+		}
+		// Col 7 was false in raw request, just safe default
+		params.Set("bSortable_7", "false")
+
+		params.Set("sSearch", "")
+		params.Set("bRegex", "false")
 		params.Set("iSortingCols", "1")
+		params.Set("iSortCol_0", "0")
 		params.Set("sSortDir_0", "asc")
 
 		finalURL := NumberApiURL + "?" + params.Encode()
@@ -287,6 +313,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		req, _ := http.NewRequest("GET", finalURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
