@@ -157,6 +157,8 @@ func (c *Client) performLogin() error {
 
 // ---------------------- SMS CLEANING (TODAY ONLY) ----------------------
 
+// ---------------------- SMS CLEANING (Matches Node.js Logic) ----------------------
+
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
@@ -164,16 +166,21 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
 			if i == 0 {
-				c.SessKey = "" 
+				c.SessKey = ""
+				c.HTTPClient.Jar, _ = cookiejar.New(nil)
 				continue
 			}
 			return nil, err
 		}
 
-		// UPDATED DATE LOGIC: TODAY ONLY (00:00:00 to 23:59:59)
-		now := time.Now()
-		fdate1 := now.Format("2006-01-02") + " 00:00:00"
-		fdate2 := now.Format("2006-01-02") + " 23:59:59"
+		// MATCHING NODE.JS DATE LOGIC (Hardcoded Wide Range)
+		// Node.js uses: fdate1=2026-01-07 00:00:00 & fdate2=2259-12-20 23:59:59
+		// We will stick to dynamic "Today" to keep it useful, OR wide range if you prefer.
+		// Let's use specific dates that are known to work in your Node code to test.
+		
+		// For safety, let's use the Node.js logic:
+		fdate1 := "2026-01-07 00:00:00"
+		fdate2 := "2259-12-20 23:59:59"
 
 		params := url.Values{}
 		params.Set("fdate1", fdate1)
@@ -187,32 +194,71 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("fgnumber", "")
 		params.Set("fgcli", "")
 		params.Set("fg", "0")
-		params.Set("sesskey", c.SessKey) // Using saved key
-		params.Set("sEcho", "1")
+		
+		// Note: We set sesskey directly. 
+		// Go's url.Encode() handles special chars correctly.
+		params.Set("sesskey", c.SessKey)
+		
+		params.Set("sEcho", "2") // Node.js uses 2
 		params.Set("iColumns", "7")
+		params.Set("sColumns", ",,,,,,")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "100") 
+		params.Set("iDisplayLength", "-1") // Node.js uses -1
+		params.Set("mDataProp_0", "0")
+		params.Set("sSearch_0", "")
+		params.Set("bRegex_0", "false")
+		params.Set("bSearchable_0", "true")
+		params.Set("bSortable_0", "true")
+		params.Set("mDataProp_1", "1")
+		params.Set("sSearch_1", "")
+		params.Set("bRegex_1", "false")
+		params.Set("bSearchable_1", "true")
+		params.Set("bSortable_1", "true")
+		params.Set("mDataProp_2", "2")
+		params.Set("sSearch_2", "")
+		params.Set("bRegex_2", "false")
+		params.Set("bSearchable_2", "true")
+		params.Set("bSortable_2", "true")
+		params.Set("mDataProp_3", "3")
+		params.Set("sSearch_3", "")
+		params.Set("bRegex_3", "false")
+		params.Set("bSearchable_3", "true")
+		params.Set("bSortable_3", "true")
+		params.Set("mDataProp_4", "4")
+		params.Set("sSearch_4", "")
+		params.Set("bRegex_4", "false")
+		params.Set("bSearchable_4", "true")
+		params.Set("bSortable_4", "true")
+		params.Set("mDataProp_5", "5")
+		params.Set("sSearch_5", "")
+		params.Set("bRegex_5", "false")
+		params.Set("bSearchable_5", "true")
+		params.Set("bSortable_5", "true")
+		params.Set("mDataProp_6", "6")
+		params.Set("sSearch_6", "")
+		params.Set("bRegex_6", "false")
+		params.Set("bSearchable_6", "true")
+		params.Set("bSortable_6", "true")
 		params.Set("sSearch", "")
 		params.Set("bRegex", "false")
+		params.Set("iSortingCols", "1")
 		params.Set("iSortCol_0", "0")
 		params.Set("sSortDir_0", "desc")
-		params.Set("iSortingCols", "1")
 
-		for j := 0; j < 7; j++ {
-			idx := strconv.Itoa(j)
-			params.Set("mDataProp_"+idx, idx)
-			params.Set("sSearch_"+idx, "")
-			params.Set("bRegex_"+idx, "false")
-			params.Set("bSearchable_"+idx, "true")
-			params.Set("bSortable_"+idx, "true")
-		}
-
+		// Construct URL
+		// Note: QueryEscape might turn space into + or %20. 
+		// Some PHP servers are picky. Go uses + by default for query params.
+		// Let's manually build the query string if needed, but standard Encode() usually works.
 		finalURL := SMSApiURL + "?" + params.Encode()
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
+		
+		// HEADERS FROM NODE.JS
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; V2040 Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.34 Mobile Safari/537.36")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Origin", BaseURL) // Added Origin
 		req.Header.Set("Referer", ReportsPage)
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9,ur-PK;q=0.8,ur;q=0.7") // Added Language
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -221,12 +267,12 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// اگر ایچ ٹی ایم ایل آیا تو اس کا مطلب سیشن ایکسپائر ہو گیا ہے
-		if bytes.Contains(body, []byte("<!DOCTYPE HTML>")) || bytes.Contains(body, []byte("<html")) {
+		// Check for HTML (Session Expiry)
+		if bytes.Contains(body, []byte("<!DOCTYPE HTML>")) || bytes.Contains(body, []byte("<html")) || bytes.Contains(body, []byte("login")) {
 			fmt.Println("[NumberPanel] Session Expired (HTML received). Re-logging...")
-			c.SessKey = "" // کی ختم کر دی تاکہ اگلی بار نیا لاگ ان ہو
+			c.SessKey = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
-			continue // لوپ دوبارہ چلے گا اور نیا لاگ ان کرے گا
+			continue
 		}
 
 		return cleanNumberPanelSMS(body)
