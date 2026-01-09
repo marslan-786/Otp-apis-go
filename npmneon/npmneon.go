@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// URLs for NPM-Neon Panel (IP: 144.217.66.209)
+// URLs for NPM-Neon Panel (Agent Account)
 const (
 	BaseURL      = "http://144.217.66.209"
 	LoginURL     = BaseURL + "/ints/login"
@@ -40,24 +40,22 @@ type ApiResponse struct {
 }
 
 // =========================================================
-// GLOBAL RAM STORAGE (Specific to 'npmneon' package ONLY)
+// GLOBAL RAM STORAGE (NPM-Neon Specific)
 // =========================================================
 var (
-	activeClient *Client    // یہ ویری ایبل صرف NPM-Neon کا سیشن سنبھالے گا
-	clientMutex  sync.Mutex // تھریڈ سیفٹی کے لیے
+	activeClient *Client    
+	clientMutex  sync.Mutex 
 )
 
-// GetSession: یہ فنکشن ہر بار وہی پرانا کلائنٹ واپس کرے گا (RAM سے)
+// GetSession: Returns existing client from RAM or creates new
 func GetSession() *Client {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
-	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو
 	if activeClient != nil {
 		return activeClient
 	}
 
-	// اگر پہلی بار کال ہو رہا ہے تو نیا بناؤ اور محفوظ کر لو
 	jar, _ := cookiejar.New(nil)
 	activeClient = &Client{
 		HTTPClient: &http.Client{
@@ -69,7 +67,7 @@ func GetSession() *Client {
 }
 
 // ---------------------------------------------------------
-// LOGIN LOGIC (Cookie Based + Hardcoded)
+// LOGIN LOGIC (Cookie Based)
 // ---------------------------------------------------------
 
 // ensureSession: Check if we have valid cookies
@@ -97,7 +95,7 @@ func (c *Client) performLogin() error {
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	bodyString := string(bodyBytes)
 
-	// Captcha: What is 9 + 7 = ?
+	// Captcha Logic
 	fmt.Println("[NPM-Neon] >> Step 2: Solving Captcha")
 	re := regexp.MustCompile(`What is (\d+) \+ (\d+) = \?`)
 	matches := re.FindStringSubmatch(bodyString)
@@ -109,10 +107,10 @@ func (c *Client) performLogin() error {
 	captchaAns := strconv.Itoa(num1 + num2)
 	fmt.Printf("[NPM-Neon] Captcha Solved: %s\n", captchaAns)
 
-	// Step 3: Login POST (HARDCODED CREDENTIALS)
+	// Login POST
 	data := url.Values{}
-	data.Set("username", "Kami526") // Hardcoded User
-	data.Set("password", "Kami526") // Hardcoded Pass
+	data.Set("username", "Kami526") 
+	data.Set("password", "Kami526") 
 	data.Set("capt", captchaAns)
 
 	loginReq, _ := http.NewRequest("POST", SigninURL, bytes.NewBufferString(data.Encode()))
@@ -134,25 +132,26 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS CLEANING LOGIC (Updated Date) ----------------------
+// ---------------------- SMS CLEANING LOGIC (TODAY ONLY) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
-	// Retry Loop: Handles Session Expiry
+	// Auto Re-Login Loop
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
+			if i == 0 {
+				c.HTTPClient.Jar, _ = cookiejar.New(nil) // Reset cookies
+				continue
+			}
 			return nil, err
 		}
 
-		// --- NEW DATE LOGIC (Yesterday to Tomorrow) ---
+		// DATE: Today Only (00:00 to 23:59)
 		now := time.Now()
-		yesterday := now.AddDate(0, 0, -1)
-		tomorrow := now.AddDate(0, 0, 1)
-
-		fdate1 := yesterday.Format("2006-01-02") + " 00:00:00"
-		fdate2 := tomorrow.Format("2006-01-02") + " 23:59:59"
+		fdate1 := now.Format("2006-01-02") + " 00:00:00"
+		fdate2 := now.Format("2006-01-02") + " 23:59:59"
 
 		params := url.Values{}
 		params.Set("fdate1", fdate1)
@@ -179,15 +178,16 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// Check Session Expiry
-		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
-			fmt.Println("[NPM-Neon] Session Expired. Re-logging...")
-			c.HTTPClient.Jar, _ = cookiejar.New(nil) // Reset Cookies
-			continue // Auto Retry
+		// CHECK: Session Expiry (HTML)
+		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
+			fmt.Println("[NPM-Neon] Session Expired (HTML). Re-logging...")
+			c.HTTPClient.Jar, _ = cookiejar.New(nil) // Clear invalid cookies
+			continue // Retry
 		}
 
 		cleanedJSON, err := cleanSMSData(body)
 		if err != nil {
+			if i == 0 { continue }
 			return nil, err 
 		}
 		return cleanedJSON, nil
@@ -203,32 +203,27 @@ func cleanSMSData(rawJSON []byte) ([]byte, error) {
 
 	var cleanedRows [][]interface{}
 
-	// Raw Neon: [Date(0), Country(1), Number(2), Service(3), User(4), Message(5), Cost(6), Status(7), ...]
-	// Target: [Date, Country, Number, Service, Message, Currency, Cost, Status] (No User)
+	// Raw Neon Agent: [Date(0), Country(1), Number(2), Service(3), User(4), Message(5), Cost(6), Status(7)]
+	// Target Format: [Date, Country, Number, Service, Msg, Currency, Cost, Status]
 
 	for _, row := range apiResp.AAData {
-		if len(row) > 8 {
-			// Message Cleanup (Index 5)
+		if len(row) > 7 {
+			// Message Cleanup
 			msg, _ := row[5].(string)
-			
-			// 1. Unescape HTML
 			msg = html.UnescapeString(msg)
-			
-			// 2. Remove Junk
 			msg = strings.ReplaceAll(msg, "<#>", "")
-			msg = strings.ReplaceAll(msg, "null", "") // Remove literal "null" text
-			msg = strings.TrimSpace(msg) // Remove extra spaces/newlines
+			msg = strings.ReplaceAll(msg, "null", "")
+			msg = strings.TrimSpace(msg)
 
-			// Construct New Row (Skipping Index 4: User)
 			newRow := []interface{}{
 				row[0], // Date
 				row[1], // Country
 				row[2], // Number
 				row[3], // Service
-				msg,    // Message (Moved up)
-				row[6], // Currency (Usually $)
-				row[7], // Cost
-				row[8], // Status
+				msg,    // Full Message
+				"$",    // Currency (Usually implicit in Agent panel, hardcoded $)
+				row[6], // Cost
+				row[7], // Status
 			}
 			cleanedRows = append(cleanedRows, newRow)
 		}
@@ -238,7 +233,7 @@ func cleanSMSData(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING LOGIC (Updated Params) ----------------------
+// ---------------------- NUMBERS CLEANING (1st Jan to Today) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -246,22 +241,30 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
+			if i == 0 {
+				c.HTTPClient.Jar, _ = cookiejar.New(nil)
+				continue
+			}
 			return nil, err
 		}
 
-		// --- UPDATED PARAMS FROM RAW REQUEST ---
+		// DATE: 1st Jan 2026 to Today
+		fdate1 := "2026-01-01 00:00:00"
+		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59"
+
 		params := url.Values{}
+		// If API supports date filtering (usually Agent panels do)
+		params.Set("fdate1", fdate1) 
+		params.Set("fdate2", fdate2)
+
 		params.Set("frange", "")
 		params.Set("fclient", "")
-		
-		// Exact Browser Params to fetch FULL list
 		params.Set("sEcho", "2")
 		params.Set("iColumns", "8")
 		params.Set("sColumns", ",,,,,,,")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "-1") // -1 means ALL Records
+		params.Set("iDisplayLength", "-1") // ALL Records
 		
-		// Column Maps
 		for j := 0; j < 8; j++ {
 			idx := strconv.Itoa(j)
 			params.Set("mDataProp_"+idx, idx)
@@ -269,12 +272,8 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			params.Set("bRegex_"+idx, "false")
 			params.Set("bSearchable_"+idx, "true")
 			
-			// Sorting flags based on your raw request
-			// 0=false, 1-6=true, 7=false
 			sortable := "true"
-			if j == 0 || j == 7 {
-				sortable = "false"
-			}
+			if j == 0 || j == 7 { sortable = "false" }
 			params.Set("bSortable_"+idx, sortable)
 		}
 
@@ -298,7 +297,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
+		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
 			fmt.Println("[NPM-Neon] Session Expired (Numbers). Re-logging...")
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
 			continue
@@ -306,6 +305,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 
 		cleanedJSON, err := cleanNumberData(body)
 		if err != nil {
+			if i == 0 { continue }
 			return nil, err
 		}
 		return cleanedJSON, nil
@@ -323,37 +323,30 @@ func cleanNumberData(rawJSON []byte) ([]byte, error) {
 	rePrice := regexp.MustCompile(`[\d\.]+`)
 
 	for _, row := range apiResp.AAData {
-		// Raw Neon: [Checkbox(0), RangeName(1), Prefix(2), Number(3), PriceHTML(4), Action(5), Empty(6), Stats(7)]
+		// Agent Raw: [Checkbox(0), Range(1), Prefix(2), Number(3), PriceHTML(4), Action(5), Empty(6), Stats(7)]
 		if len(row) > 7 {
 			rangeName := row[1]
 			prefix := row[2]
 			number := row[3]
 			
-			// Price & Type Analysis
 			rawPrice, _ := row[4].(string)
-			billingType := "Weekly" // Default
+			billingType := "Weekly"
 			if strings.Contains(strings.ToLower(rawPrice), "monthly") {
 				billingType = "Monthly"
 			}
 
 			currency := "$"
-			if strings.Contains(rawPrice, "€") {
-				currency = "€"
-			} else if strings.Contains(rawPrice, "£") {
-				currency = "£"
-			}
+			if strings.Contains(rawPrice, "€") { currency = "€" }
+			else if strings.Contains(rawPrice, "£") { currency = "£" }
 
 			priceVal := "0"
 			matches := rePrice.FindAllString(rawPrice, -1)
-			if len(matches) > 0 {
-				priceVal = matches[len(matches)-1]
-			}
+			if len(matches) > 0 { priceVal = matches[len(matches)-1] }
 			priceStr := currency + " " + priceVal
 
-			// Stats (SD/SW counts)
 			stats := row[7]
 
-			// Final Format: [Country, Prefix, Number, Type, Price, Stats]
+			// Unified Format: [Country, Prefix, Number, Type, Price, Stats]
 			newRow := []interface{}{
 				rangeName,
 				prefix,
