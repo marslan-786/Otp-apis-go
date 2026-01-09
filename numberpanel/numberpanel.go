@@ -243,17 +243,33 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 	var cleanedRows [][]interface{}
 
 	for _, row := range apiResp.AAData {
+		// Client Panel Raw Data usually: 
+		// [0]Date, [1]Range, [2]Number, [3]Sender, [4]Message, [5]Cost/Status
+		
 		if len(row) > 4 {
-			msg, _ := row[4].(string)
+			msg, _ := row[4].(string) // Message is usually at index 4
 			msg = html.UnescapeString(msg)
 			msg = strings.ReplaceAll(msg, "null", "")
 
+			// Extract Price/Cost if available (usually at index 5)
+			cost := "0"
+			if len(row) > 5 {
+				if val, ok := row[5].(string); ok {
+					cost = val
+				}
+			}
+
+			// =======================================================
+			// FINAL D-GROUP STYLE STRUCTURE
+			// =======================================================
 			newRow := []interface{}{
-				row[0], // Date
-				row[2], // Number
-				row[3], // CLI/Sender
-				msg,    // SMS Content
-				row[1], // Range
+				row[0], // 0: Date (Time)
+				row[1], // 1: Range Name / Country (D-Group style position)
+				row[2], // 2: Phone Number
+				row[3], // 3: Service Name (Sender ID)
+				msg,    // 4: Full Message Content
+				"$",    // 5: Currency Symbol (Hardcoded to match D-Group)
+				cost,   // 6: Cost/Price
 			}
 			cleanedRows = append(cleanedRows, newRow)
 		}
@@ -261,7 +277,6 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 	apiResp.AAData = cleanedRows
 	return json.Marshal(apiResp)
 }
-
 // ---------------------- NUMBERS CLEANING (1st Jan to Today) ----------------------
 
 // ---------------------- NUMBERS CLEANING (1st Jan to Today) ----------------------
