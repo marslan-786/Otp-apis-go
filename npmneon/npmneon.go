@@ -335,13 +335,20 @@ func cleanNumberData(rawJSON []byte) ([]byte, error) {
 				billingType = "Monthly"
 			}
 
+			// ================= FIX IS HERE =================
 			currency := "$"
-			if strings.Contains(rawPrice, "€") { currency = "€" }
-			else if strings.Contains(rawPrice, "£") { currency = "£" }
+			if strings.Contains(rawPrice, "€") {
+				currency = "€"
+			} else if strings.Contains(rawPrice, "£") {
+				currency = "£"
+			}
+			// ===============================================
 
 			priceVal := "0"
 			matches := rePrice.FindAllString(rawPrice, -1)
-			if len(matches) > 0 { priceVal = matches[len(matches)-1] }
+			if len(matches) > 0 {
+				priceVal = matches[len(matches)-1]
+			}
 			priceStr := currency + " " + priceVal
 
 			stats := row[7]
