@@ -266,6 +266,7 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 
 // ---------------------- NUMBERS CLEANING (1st Jan to Today) ----------------------
 
+
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
@@ -279,18 +280,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
-		// DATE LOGIC: 1st Jan 2026 to NOW
-		fdate1 := "2026-01-01 00:00:00" 
-		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59"
-
 		params := url.Values{}
-		
-		// ========================================================
-		// FIX: ان لائنوں سے // ہٹا دیا ہے تاکہ ایرر ختم ہو جائے
-		// ========================================================
-		params.Set("fdate1", fdate1) 
-		params.Set("fdate2", fdate2)
-		
 		params.Set("frange", "")
 		params.Set("fclient", "")
 		params.Set("sEcho", "4")
@@ -304,6 +294,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		params.Set("sSortDir_0", "asc")
 		params.Set("iSortingCols", "1")
 
+		// Map Data Props
 		for j := 0; j < 6; j++ {
 			idx := strconv.Itoa(j)
 			params.Set("mDataProp_"+idx, idx)
@@ -348,31 +339,60 @@ func processNumbersWithCountry(rawJSON []byte) ([]byte, error) {
 	var processedRows [][]interface{}
 
 	for _, row := range apiResp.AAData {
-		if len(row) > 0 {
-			fullNumStr, ok := row[0].(string)
-			if !ok { continue }
+		// Client API Raw Structure:
+		// [0] Range Name
+		// [1] Empty
+		// [2] Full Number
+		// [3] Period
+		// [4] Price
+		// [5] Stats
 
-			countryName := "Unknown"
-			countryPrefix := ""
+		if len(row) >= 6 {
+			rangeName, _ := row[0].(string) // [0] Range Name
+			numberStr, _ := row[2].(string) // [2] Number
+			period, _ := row[3].(string)    // [3] Period
+			price, _ := row[4].(string)     // [4] Price
+			statsRaw, _ := row[5].(string)  // [5] Stats
 
-			parseNumStr := fullNumStr
+			// 1. Clean Number (Remove spaces/dashes)
+			numberStr = strings.ReplaceAll(numberStr, " ", "")
+			numberStr = strings.ReplaceAll(numberStr, "-", "")
+
+			// 2. Get Country Code for Index [1]
+			countryCodeStr := "" // Default empty if parse fails
+			
+			// Add + for parsing if missing
+			parseNumStr := numberStr
 			if !strings.HasPrefix(parseNumStr, "+") {
 				parseNumStr = "+" + parseNumStr
 			}
 
+			// Use Library to extract Country Code (e.g. 213, 92)
 			numObj, err := phonenumbers.Parse(parseNumStr, "")
 			if err == nil {
-				countryPrefix = strconv.Itoa(int(numObj.GetCountryCode()))
-				regionCode := phonenumbers.GetRegionCodeForNumber(numObj)
-				countryName = getCountryName(regionCode)
+				countryCodeStr = strconv.Itoa(int(numObj.GetCountryCode()))
+			} else {
+				// If parsing fails, try to extract first few digits manually or leave empty
+				if len(numberStr) > 4 {
+					countryCodeStr = numberStr[:3] 
+				}
 			}
 
+			// 3. Clean Stats HTML
+			statsClean := strings.ReplaceAll(statsRaw, "<b>", "")
+			statsClean = strings.ReplaceAll(statsClean, "</b>", "")
+			statsClean = strings.TrimSpace(statsClean)
+
+			// =======================================================
+			// FINAL MAIT-STYLE STRUCTURE
+			// =======================================================
 			newRow := []interface{}{
-				countryName,   
-				countryPrefix, 
-				fullNumStr,    
-				row[1],        
-				row[4],        
+				rangeName,      // [0] Main Title (e.g. Algeria-Exclusive...)
+				countryCodeStr, // [1] Subtitle 1: Country Code (e.g. 213)
+				numberStr,      // [2] Subtitle 2: Full Number
+				period,         // [3] Period (Weekly/Monthly)
+				price,          // [4] Price
+				statsClean,     // [5] Bottom Stats
 			}
 			processedRows = append(processedRows, newRow)
 		}
