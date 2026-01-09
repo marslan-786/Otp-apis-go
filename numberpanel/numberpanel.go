@@ -264,6 +264,8 @@ func cleanNumberPanelSMS(rawJSON []byte) ([]byte, error) {
 
 // ---------------------- NUMBERS CLEANING (1st Jan to Today) ----------------------
 
+// ---------------------- NUMBERS CLEANING (1st Jan to Today) ----------------------
+
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
@@ -277,20 +279,17 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			return nil, err
 		}
 
-		// UPDATED DATE LOGIC: 1st Jan 2026 to NOW
-		fdate1 := "2026-01-01 00:00:00" // Hardcoded start date
-		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59" // Today
+		// DATE LOGIC: 1st Jan 2026 to NOW
+		fdate1 := "2026-01-01 00:00:00" 
+		fdate2 := time.Now().Format("2006-01-02") + " 23:59:59"
 
-		// Note: The Numbers API endpoint (data_smsnumbers.php) doesn't seem to accept date params 
-		// in the URL query string based on your capture, but I'll check if they were POST or implied.
-		// Your provided capture didn't show fdate params for numbers, but I will keep logic simple.
-		// If the panel supports date filtering via params, add them here. 
-		// Assuming standard parameters as per previous logic:
-		
 		params := url.Values{}
-		// If the API supports date filtering:
-		// params.Set("fdate1", fdate1) 
-		// params.Set("fdate2", fdate2)
+		
+		// ========================================================
+		// FIX: ان لائنوں سے // ہٹا دیا ہے تاکہ ایرر ختم ہو جائے
+		// ========================================================
+		params.Set("fdate1", fdate1) 
+		params.Set("fdate2", fdate2)
 		
 		params.Set("frange", "")
 		params.Set("fclient", "")
