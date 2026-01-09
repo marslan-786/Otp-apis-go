@@ -9,6 +9,7 @@ import (
 	"myproject/mait"
 	"myproject/npmneon"
 	"myproject/numberpanel"
+	"myproject/numberpanel1"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,6 +24,7 @@ func main() {
 	
 	dClient := dgroup.GetSession()
 	npClient := numberpanel.GetSession()
+	np1Client := numberpanel1.GetSession()
 	neonClient := npmneon.GetSession()
 	maitClient := mait.GetSession()
 
@@ -57,6 +59,24 @@ func main() {
 
 	r.GET("/number-panel/numbers", func(c *gin.Context) {
 		data, err := npClient.GetNumberStats()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+	})
+	
+	r.GET("/number-panel1/sms", func(c *gin.Context) {
+		data, err := np1Client.GetSMSLogs()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+	})
+
+	r.GET("/number-panel1/numbers", func(c *gin.Context) {
+		data, err := np1Client.GetNumberStats()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
