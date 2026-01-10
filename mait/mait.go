@@ -37,27 +37,29 @@ type ApiResponse struct {
 
 type Client struct {
 	HTTPClient *http.Client
-	Csstr      string // MAIT Uses 'csstr' as Session Key
+	Csstr      string // Only CSSTR is needed now
 	Mutex      sync.Mutex
 }
 
 // =========================================================
-// GLOBAL RAM STORAGE (Specific to 'mait' package)
+// GLOBAL RAM STORAGE (Specific to 'mait' package only)
 // =========================================================
 var (
-	activeClient *Client    
-	clientMutex  sync.Mutex 
+	activeClient *Client    // یہ ویری ایبل صرف اس پینل کا سیشن ہولڈ کرے گا
+	clientMutex  sync.Mutex // تھریڈ سیفٹی کے لیے
 )
 
-// GetSession: Returns existing client from RAM or creates new
+// GetSession: یہ فنکشن ہر بار وہی پرانا کلائنٹ واپس کرے گا (RAM سے)
 func GetSession() *Client {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
+	// اگر کلائنٹ پہلے سے موجود ہے تو وہی واپس کرو
 	if activeClient != nil {
 		return activeClient
 	}
 
+	// اگر پہلی بار کال ہو رہا ہے تو نیا بناؤ اور محفوظ کر لو
 	jar, _ := cookiejar.New(nil)
 	activeClient = &Client{
 		HTTPClient: &http.Client{
@@ -68,12 +70,8 @@ func GetSession() *Client {
 	return activeClient
 }
 
-// ---------------------------------------------------------
-// LOGIN LOGIC
-// ---------------------------------------------------------
-
+// ensureSession: Check if we have the Csstr token
 func (c *Client) ensureSession() error {
-	// اگر سیشن کی (Csstr) موجود ہے تو لاگ ان کی ضرورت نہیں
 	if c.Csstr != "" {
 		return nil
 	}
@@ -81,6 +79,7 @@ func (c *Client) ensureSession() error {
 	return c.performLogin()
 }
 
+// performLogin: Hardcoded Credentials as requested
 func (c *Client) performLogin() error {
 	fmt.Println("[Masdar] >> Step 1: Login Page")
 	
@@ -95,7 +94,7 @@ func (c *Client) performLogin() error {
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	bodyString := string(bodyBytes)
 
-	// Captcha Logic
+	// Captcha Logic: What is 5 + 2 = ?
 	fmt.Println("[Masdar] >> Step 2: Solving Captcha")
 	re := regexp.MustCompile(`What is (\d+) \+ (\d+) = \?`)
 	matches := re.FindStringSubmatch(bodyString)
@@ -105,9 +104,9 @@ func (c *Client) performLogin() error {
 	num1, _ := strconv.Atoi(matches[1])
 	num2, _ := strconv.Atoi(matches[2])
 	captchaAns := strconv.Itoa(num1 + num2)
-	fmt.Printf("[Masdar] Captcha Solved: %s + %s = %s\n", matches[1], matches[2], captchaAns)
+	fmt.Printf("[Masdar] Captcha Solved: %s\n", captchaAns)
 
-	// Step 3: Login POST
+	// Step 3: Login POST (HARDCODED CREDENTIALS KEPT)
 	data := url.Values{}
 	data.Set("username", "Kami526") // Hardcoded User
 	data.Set("password", "Kami526") // Hardcoded Pass
@@ -124,7 +123,7 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 
-	// Step 4: Get Csstr Token
+	// Step 4: Get Only Csstr
 	fmt.Println("[Masdar] >> Step 3: Getting Csstr Token")
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
 	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
@@ -142,42 +141,35 @@ func (c *Client) performLogin() error {
 	csstrMatch := csstrRe.FindStringSubmatch(reportString)
 	
 	if len(csstrMatch) > 1 {
-		c.Csstr = csstrMatch[1] // Save to RAM
+		c.Csstr = csstrMatch[1] // SAVED TO RAM OBJECT
 		fmt.Println("[Masdar] SUCCESS: Found Csstr:", c.Csstr)
 	} else {
-		// Fallback regex if first one fails
+		// Fallback regex
 		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']([^"']+)["']`)
 		match2 := fallbackRe.FindStringSubmatch(reportString)
 		if len(match2) > 1 {
 			c.Csstr = match2[1]
 			fmt.Println("[Masdar] SUCCESS: Found Csstr (Fallback):", c.Csstr)
 		} else {
-			return errors.New("csstr token not found (Login failed?)")
+			fmt.Println("[Masdar] Warning: Csstr not found! API calls might fail.")
 		}
 	}
 
 	return nil
 }
 
-// ---------------------- SMS CLEANING (Auto Re-Login Implemented) ----------------------
+// ---------------------- SMS CLEANING (Date Logic Updated) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
-	// Loop 2 times: Try Request -> If HTML (Expired) -> Re-Login -> Retry Request
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
-			// If ensureSession fails (maybe cookies died), reset and continue to force login
-			if i == 0 {
-				c.Csstr = ""
-				c.HTTPClient.Jar, _ = cookiejar.New(nil)
-				continue
-			}
 			return nil, err
 		}
 
-		// Date: Yesterday to Tomorrow
+		// --- NEW DATE LOGIC (Yesterday to Tomorrow) ---
 		now := time.Now()
 		yesterday := now.AddDate(0, 0, -1)
 		tomorrow := now.AddDate(0, 0, 1)
@@ -193,7 +185,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("fg", "0")
 		
 		if c.Csstr != "" {
-			params.Set("csstr", c.Csstr) // Use saved token
+			params.Set("csstr", c.Csstr)
 		}
 
 		params.Set("sEcho", "3")
@@ -214,32 +206,21 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// ==========================================================
-		// CRITICAL CHECK: If response is HTML, Session is EXPIRED
-		// ==========================================================
-		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
-			fmt.Println("[Masdar] Session Expired (HTML received). Re-logging silently...")
-			
-			// 1. Clear the invalid token
-			c.Csstr = "" 
-			// 2. Clear cookies
+		// Check Session Expiry
+		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
+			fmt.Println("[Masdar] HTML detected (Session Expired), Retrying...")
+			c.Csstr = "" // Reset Token so loop retries login
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
-			
-			// 3. 'continue' will go to next loop iteration
-			// Loop 2 will call ensureSession(), which calls performLogin(), gets new token, and retries request.
-			continue 
+			continue
 		}
 
-		// If we are here, response is JSON. Clean and return.
 		cleanedJSON, err := cleanMasdarSMS(body)
 		if err != nil {
-			// If JSON parse fails, maybe it's some other error, retrying won't help much but let's be safe
-			if i == 0 { continue }
 			return nil, err
 		}
 		return cleanedJSON, nil
 	}
-	return nil, errors.New("failed after retry (login loop)")
+	return nil, errors.New("failed after retry")
 }
 
 func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
@@ -250,8 +231,12 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 
 	var cleanedRows [][]interface{}
 
+	// Raw: [Date(0), Country(1), Number(2), Service(3), User(4), Message(5), Currency(6), Cost(7), Status(8)]
+	// Target: [Date, Country, Number, Service, Message, Currency, Cost, Status] (User Removed)
+
 	for _, row := range apiResp.AAData {
 		if len(row) > 8 {
+			// Message Cleanup (Index 5 in RAW)
 			msg, _ := row[5].(string)
 			msg = html.UnescapeString(msg)
 			msg = strings.ReplaceAll(msg, "null", "")
@@ -261,7 +246,8 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 				row[1], // Country
 				row[2], // Number
 				row[3], // Service
-				msg,    // Message (Moved here)
+				// SKIPPING ROW[4] (User)
+				msg,    // Message (Moved to position 4)
 				row[6], // Currency
 				row[7], // Cost
 				row[8], // Status
@@ -274,7 +260,7 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING (Auto Re-Login Implemented) ----------------------
+// ---------------------- NUMBERS CLEANING (Params Updated) ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -282,14 +268,10 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
-			if i == 0 {
-				c.Csstr = ""
-				c.HTTPClient.Jar, _ = cookiejar.New(nil)
-				continue
-			}
 			return nil, err
 		}
 
+		// --- UPDATED PARAMS FROM RAW REQUEST ---
 		params := url.Values{}
 		params.Set("frange", "")
 		params.Set("fclient", "")
@@ -298,21 +280,28 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			params.Set("csstr", c.Csstr)
 		}
 
+		// Exact Browser Params to fetch FULL list
 		params.Set("sEcho", "2")
 		params.Set("iColumns", "8")
 		params.Set("sColumns", ",,,,,,,")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "-1") // ALL Records
+		params.Set("iDisplayLength", "-1") // -1 means ALL Records
 		
+		// Column Maps
 		for j := 0; j < 8; j++ {
 			idx := strconv.Itoa(j)
 			params.Set("mDataProp_"+idx, idx)
 			params.Set("sSearch_"+idx, "")
 			params.Set("bRegex_"+idx, "false")
 			params.Set("bSearchable_"+idx, "true")
+			
+			// Some cols are sortable, some not in your raw request, 
+			// usually setting all to true doesn't hurt, but let's stick to standard
 			params.Set("bSortable_"+idx, "true")
 		}
+		// Col 7 was false in raw request, just safe default
 		params.Set("bSortable_7", "false")
+
 		params.Set("sSearch", "")
 		params.Set("bRegex", "false")
 		params.Set("iSortingCols", "1")
@@ -333,10 +322,7 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// ==========================================================
-		// CRITICAL CHECK: Session Expiry for Numbers API
-		// ==========================================================
-		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
+		if bytes.Contains(body, []byte("<!DOCTYPE html>")) {
 			fmt.Println("[Masdar] Session Expired on Numbers, Retrying...")
 			c.Csstr = ""
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
@@ -345,7 +331,6 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 
 		cleanedJSON, err := cleanMasdarNumbers(body)
 		if err != nil {
-			if i == 0 { continue }
 			return nil, err
 		}
 		return cleanedJSON, nil
@@ -390,6 +375,7 @@ func cleanMasdarNumbers(rawJSON []byte) ([]byte, error) {
 
 			stats := row[7]
 
+			// Target Format: [Country, Prefix, Number, Type, Price, Stats]
 			newRow := []interface{}{
 				rangeName,
 				prefix,
