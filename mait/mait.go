@@ -37,19 +37,19 @@ type ApiResponse struct {
 
 type Client struct {
 	HTTPClient *http.Client
-	Csstr      string // MAIT Uses 'csstr' as Session Key
+	Csstr      string // Session Key
 	Mutex      sync.Mutex
 }
 
 // =========================================================
-// GLOBAL RAM STORAGE (Specific to 'mait' package)
+// GLOBAL RAM STORAGE
 // =========================================================
 var (
 	activeClient *Client    
 	clientMutex  sync.Mutex 
 )
 
-// GetSession: Returns existing client from RAM or creates new
+// GetSession: Returns existing client or creates new
 func GetSession() *Client {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
@@ -69,11 +69,10 @@ func GetSession() *Client {
 }
 
 // ---------------------------------------------------------
-// LOGIN LOGIC
+// LOGIN LOGIC (Updated Captcha)
 // ---------------------------------------------------------
 
 func (c *Client) ensureSession() error {
-	// اگر سیشن کی (Csstr) موجود ہے تو لاگ ان کی ضرورت نہیں
 	if c.Csstr != "" {
 		return nil
 	}
@@ -85,7 +84,8 @@ func (c *Client) performLogin() error {
 	fmt.Println("[Masdar] >> Step 1: Login Page")
 	
 	req, _ := http.NewRequest("GET", LoginURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -95,13 +95,23 @@ func (c *Client) performLogin() error {
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	bodyString := string(bodyBytes)
 
-	// Captcha Logic
+	// ==========================================================
+	// FIX: Robust Captcha Regex
+	// HTML Example: What is 1 + 5 = ? : <input...
+	// ==========================================================
 	fmt.Println("[Masdar] >> Step 2: Solving Captcha")
-	re := regexp.MustCompile(`What is (\d+) \+ (\d+) = \?`)
+	
+	// یہ Regex اب اسپیس اور ایکسٹرا الفاظ کو بہتر ہینڈل کرے گا
+	// \s* کا مطلب ہے اسپیس ہو بھی سکتی ہے اور نہیں بھی
+	re := regexp.MustCompile(`What\s+is\s+(\d+)\s*\+\s*(\d+)`)
 	matches := re.FindStringSubmatch(bodyString)
+	
 	if len(matches) < 3 {
-		return errors.New("captcha math failed")
+		// ڈیبگنگ کے لیے اگر کیپچا فیل ہو تو باڈی پرنٹ کروا سکتے ہیں
+		// fmt.Println(bodyString) 
+		return errors.New("captcha regex failed to find numbers")
 	}
+
 	num1, _ := strconv.Atoi(matches[1])
 	num2, _ := strconv.Atoi(matches[2])
 	captchaAns := strconv.Itoa(num1 + num2)
@@ -109,14 +119,15 @@ func (c *Client) performLogin() error {
 
 	// Step 3: Login POST
 	data := url.Values{}
-	data.Set("username", "Kami526") // Hardcoded User
-	data.Set("password", "Kami526") // Hardcoded Pass
+	data.Set("username", "Kami526") 
+	data.Set("password", "Kami526") 
 	data.Set("capt", captchaAns)
 
 	loginReq, _ := http.NewRequest("POST", SigninURL, bytes.NewBufferString(data.Encode()))
 	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	loginReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+	loginReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
 	loginReq.Header.Set("Referer", LoginURL)
+	loginReq.Header.Set("Origin", BaseURL)
 
 	resp, err = c.HTTPClient.Do(loginReq)
 	if err != nil {
@@ -124,10 +135,11 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 
-	// Step 4: Get Csstr Token
+	// Step 4: Get Csstr Token from Reports Page
 	fmt.Println("[Masdar] >> Step 3: Getting Csstr Token")
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
-	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+	reportReq.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
+	reportReq.Header.Set("Referer", BaseURL+"/ints/agent/")
 
 	resp, err = c.HTTPClient.Do(reportReq)
 	if err != nil {
@@ -137,38 +149,36 @@ func (c *Client) performLogin() error {
 	reportBody, _ := io.ReadAll(resp.Body)
 	reportString := string(reportBody)
 	
-	// Regex specifically for 'csstr'
-	csstrRe := regexp.MustCompile(`csstr=([^"&']+)`)
+	// Regex specifically for 'csstr' found in the HTML source code
+	csstrRe := regexp.MustCompile(`csstr=([a-zA-Z0-9]+)`)
 	csstrMatch := csstrRe.FindStringSubmatch(reportString)
 	
 	if len(csstrMatch) > 1 {
 		c.Csstr = csstrMatch[1] // Save to RAM
 		fmt.Println("[Masdar] SUCCESS: Found Csstr:", c.Csstr)
 	} else {
-		// Fallback regex if first one fails
-		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']([^"']+)["']`)
+		// Fallback regex (Sometimes inside quotes like "csstr":"xxx")
+		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']?([^"']+)["']?`)
 		match2 := fallbackRe.FindStringSubmatch(reportString)
 		if len(match2) > 1 {
 			c.Csstr = match2[1]
 			fmt.Println("[Masdar] SUCCESS: Found Csstr (Fallback):", c.Csstr)
 		} else {
-			return errors.New("csstr token not found (Login failed?)")
+			return errors.New("csstr token not found (Login likely failed)")
 		}
 	}
 
 	return nil
 }
 
-// ---------------------- SMS CLEANING (Auto Re-Login Implemented) ----------------------
+// ---------------------- SMS CLEANING (Date Updated) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
-	// Loop 2 times: Try Request -> If HTML (Expired) -> Re-Login -> Retry Request
 	for i := 0; i < 2; i++ {
 		if err := c.ensureSession(); err != nil {
-			// If ensureSession fails (maybe cookies died), reset and continue to force login
 			if i == 0 {
 				c.Csstr = ""
 				c.HTTPClient.Jar, _ = cookiejar.New(nil)
@@ -177,35 +187,50 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
-		// Date: Yesterday to Tomorrow
+		// ==========================================================
+		// FIX: Date Logic (Current Day 00:00 to 23:59)
+		// ==========================================================
 		now := time.Now()
-		yesterday := now.AddDate(0, 0, -1)
-		tomorrow := now.AddDate(0, 0, 1)
-
-		fdate1 := yesterday.Format("2006-01-02") + " 00:00:00"
-		fdate2 := tomorrow.Format("2006-01-02") + " 23:59:59"
+		// آج کی تاریخ لی ہے
+		todayDate := now.Format("2006-01-02")
+		
+		fdate1 := todayDate + " 00:00:00"
+		fdate2 := todayDate + " 23:59:59"
 
 		params := url.Values{}
 		params.Set("fdate1", fdate1)
 		params.Set("fdate2", fdate2)
 		params.Set("frange", "")
 		params.Set("fclient", "")
+		params.Set("fnum", "") // Added based on trace
+		params.Set("fcli", "") // Added based on trace
+		params.Set("fgdate", "")
+		params.Set("fgmonth", "")
+		params.Set("fgrange", "")
+		params.Set("fgclient", "")
+		params.Set("fgnumber", "")
+		params.Set("fgcli", "")
 		params.Set("fg", "0")
 		
 		if c.Csstr != "" {
-			params.Set("csstr", c.Csstr) // Use saved token
+			params.Set("csstr", c.Csstr)
 		}
 
-		params.Set("sEcho", "3")
-		params.Set("iDisplayLength", "100") 
-		params.Set("iSortingCols", "1")
-		params.Set("sSortDir_0", "desc")
+		params.Set("sEcho", "1")
+		params.Set("iDisplayStart", "0")
+		params.Set("iDisplayLength", "100") // 100 records per fetch
+		params.Set("mDataProp_0", "0") // Maps to Date column
+		
+		// ضروری نہیں لیکن ٹریس کے مطابق کچھ اضافی پیرامیٹرز سیٹ کیے جا سکتے ہیں
+		// یہاں ہم صرف ضروری پیرامیٹرز بھیج رہے ہیں تاکہ سرور جواب دے دے
 
 		finalURL := SMSApiURL + "?" + params.Encode()
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Referer", ReportsPage)
+		req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -214,26 +239,16 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// ==========================================================
-		// CRITICAL CHECK: If response is HTML, Session is EXPIRED
-		// ==========================================================
+		// Check for Session Expiry (HTML response instead of JSON)
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
 			fmt.Println("[Masdar] Session Expired (HTML received). Re-logging silently...")
-			
-			// 1. Clear the invalid token
 			c.Csstr = "" 
-			// 2. Clear cookies
 			c.HTTPClient.Jar, _ = cookiejar.New(nil)
-			
-			// 3. 'continue' will go to next loop iteration
-			// Loop 2 will call ensureSession(), which calls performLogin(), gets new token, and retries request.
 			continue 
 		}
 
-		// If we are here, response is JSON. Clean and return.
 		cleanedJSON, err := cleanMasdarSMS(body)
 		if err != nil {
-			// If JSON parse fails, maybe it's some other error, retrying won't help much but let's be safe
 			if i == 0 { continue }
 			return nil, err
 		}
@@ -258,13 +273,13 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 
 			newRow := []interface{}{
 				row[0], // Date
-				row[1], // Country
+				row[1], // Range / Country
 				row[2], // Number
-				row[3], // Service
-				msg,    // Message (Moved here)
+				row[3], // CLI / Service
+				msg,    // SMS Text
 				row[6], // Currency
-				row[7], // Cost
-				row[8], // Status
+				row[7], // My Payout
+				row[8], // Client Payout
 			}
 			cleanedRows = append(cleanedRows, newRow)
 		}
@@ -274,7 +289,7 @@ func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	return json.Marshal(apiResp)
 }
 
-// ---------------------- NUMBERS CLEANING (Auto Re-Login Implemented) ----------------------
+// ---------------------- NUMBERS CLEANING ----------------------
 
 func (c *Client) GetNumberStats() ([]byte, error) {
 	c.Mutex.Lock()
@@ -298,33 +313,24 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			params.Set("csstr", c.Csstr)
 		}
 
+		// Exact parameters from your trace
 		params.Set("sEcho", "2")
 		params.Set("iColumns", "8")
 		params.Set("sColumns", ",,,,,,,")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "-1") // ALL Records
-		
-		for j := 0; j < 8; j++ {
-			idx := strconv.Itoa(j)
-			params.Set("mDataProp_"+idx, idx)
-			params.Set("sSearch_"+idx, "")
-			params.Set("bRegex_"+idx, "false")
-			params.Set("bSearchable_"+idx, "true")
-			params.Set("bSortable_"+idx, "true")
-		}
-		params.Set("bSortable_7", "false")
+		params.Set("iDisplayLength", "-1") // -1 means ALL records
 		params.Set("sSearch", "")
 		params.Set("bRegex", "false")
 		params.Set("iSortingCols", "1")
-		params.Set("iSortCol_0", "0")
 		params.Set("sSortDir_0", "asc")
 
 		finalURL := NumberApiURL + "?" + params.Encode()
 
 		req, _ := http.NewRequest("GET", finalURL, nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K)")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 		req.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
+		req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -333,9 +339,6 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// ==========================================================
-		// CRITICAL CHECK: Session Expiry for Numbers API
-		// ==========================================================
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
 			fmt.Println("[Masdar] Session Expired on Numbers, Retrying...")
 			c.Csstr = ""
