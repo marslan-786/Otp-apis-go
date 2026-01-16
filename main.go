@@ -67,7 +67,7 @@ func main() {
 	})
 
 	// ================= MAIT (Masdar) ROUTES =================
-	r.GET("/maits/sms", func(c *gin.Context) {
+	r.GET("/mait/sms", func(c *gin.Context) {
 		data, err := maitClient.GetSMSLogs()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -76,7 +76,7 @@ func main() {
 		c.Data(http.StatusOK, "application/json", data)
 	})
 
-	r.GET("/maits/numbers", func(c *gin.Context) {
+	r.GET("/mait/numbers", func(c *gin.Context) {
 		data, err := maitClient.GetNumberStats()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
