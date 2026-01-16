@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -37,19 +36,16 @@ type ApiResponse struct {
 
 type Client struct {
 	HTTPClient *http.Client
-	Csstr      string // یہ RAM میں محفوظ رہے گی
-	Mutex      sync.Mutex
+	Csstr      string 
+	Mutex      sync.Mutex // API Call Lock (optional usage)
+	LoginMutex sync.Mutex // Login Specific Lock
 }
 
-// =========================================================
-// GLOBAL STORAGE (تاکہ ہر ریکویسٹ پر نیا کلائنٹ نہ بنے)
-// =========================================================
 var (
 	activeClient *Client
 	once         sync.Once
 )
 
-// GetSession: یہ فنکشن صرف ایک بار کلائنٹ بنائے گا اور اسے ہی استعمال کرے گا
 func GetSession() *Client {
 	once.Do(func() {
 		jar, _ := cookiejar.New(nil)
@@ -64,24 +60,43 @@ func GetSession() *Client {
 }
 
 // ---------------------------------------------------------
-// LOGIN LOGIC
+// SMART LOGIN LOGIC (Prevent Multiple Logins)
 // ---------------------------------------------------------
 
+// ensureSession: صرف تب چلے گا جب ایپ پہلی بار سٹارٹ ہو گی
 func (c *Client) ensureSession() error {
-	c.Mutex.Lock()
-	defer c.Mutex.Unlock()
-
-	// اگر ہمارے پاس پہلے سے ٹوکن موجود ہے تو لاگ ان مت کرو
+	// یہ صرف ریڈ کرتا ہے، اس لیے لاک کی ضرورت نہیں اگر ٹوکن موجود ہو
 	if c.Csstr != "" {
 		return nil
 	}
+	// اگر ٹوکن نہیں ہے، تو فورس لاگ ان کرو
+	return c.ForceRelogin("")
+}
 
-	fmt.Println("[Masdar] No active session. Logging in...")
+// ForceRelogin: یہ فنکشن ساری ٹریفک روک کر صرف ایک بار لاگ ان کرے گا
+func (c *Client) ForceRelogin(failedToken string) error {
+	c.LoginMutex.Lock()
+	defer c.LoginMutex.Unlock()
+
+	// CRITICAL CHECK:
+	// چیک کرو کہ جب ہم لاک کے لیے انتظار کر رہے تھے، کیا کسی اور نے لاگ ان کر دیا؟
+	// اگر موجودہ ٹوکن 'failedToken' سے مختلف ہے اور خالی نہیں ہے، تو اس کا مطلب 
+	// کسی اور تھریڈ نے سیشن اپڈیٹ کر دیا ہے۔ ہمیں دوبارہ لاگ ان کی ضرورت نہیں ہے۔
+	if c.Csstr != "" && c.Csstr != failedToken {
+		fmt.Println("[Masdar] Another routine already refreshed the session. Using it.")
+		return nil
+	}
+
+	fmt.Println("[Masdar] 🛑 Blocking requests. Performing SINGLE Login...")
+	
+	// تھوڑا سا ڈیلے تاکہ اگر سرور غصے میں ہے تو ٹھنڈا ہو جائے
+	time.Sleep(1 * time.Second)
+
 	return c.performLogin()
 }
 
 func (c *Client) performLogin() error {
-	// Step 1: Login Page (To get Cookies & Captcha)
+	// Step 1: Login Page
 	req, _ := http.NewRequest("GET", LoginURL, nil)
 	c.setCommonHeaders(req)
 	
@@ -98,8 +113,8 @@ func (c *Client) performLogin() error {
 	matches := re.FindStringSubmatch(bodyString)
 	
 	if len(matches) < 3 {
-		// اگر یہاں 403 آتا ہے تو مطلب IP بلاک ہے
 		if strings.Contains(bodyString, "Forbidden") {
+			fmt.Println("[Masdar] ⚠️ Still getting 403 Forbidden. IP might be temporarily blocked.")
 			return errors.New("SERVER BLOCKED IP (403 Forbidden)")
 		}
 		return errors.New("captcha regex failed")
@@ -128,8 +143,7 @@ func (c *Client) performLogin() error {
 	}
 	defer resp.Body.Close()
 
-	// Step 4: Extract Csstr Token from Reports Page
-	// لاگ ان کے بعد یہ ٹوکن نکالنا ضروری ہے ورنہ API نہیں چلے گی
+	// Step 4: Extract Csstr Token
 	reportReq, _ := http.NewRequest("GET", ReportsPage, nil)
 	c.setCommonHeaders(reportReq)
 	reportReq.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
@@ -146,32 +160,36 @@ func (c *Client) performLogin() error {
 	csstrMatch := csstrRe.FindStringSubmatch(reportString)
 	
 	if len(csstrMatch) > 1 {
-		c.Csstr = csstrMatch[1]
-		fmt.Println("[Masdar] LOGIN SUCCESS. Token Saved:", c.Csstr)
+		c.Csstr = csstrMatch[1] // Update Global Token
+		fmt.Println("[Masdar] ✅ LOGIN SUCCESS. New Token:", c.Csstr)
 	} else {
-		// Fallback for different HTML structure
 		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']?([^"']+)["']?`)
 		match2 := fallbackRe.FindStringSubmatch(reportString)
 		if len(match2) > 1 {
 			c.Csstr = match2[1]
-			fmt.Println("[Masdar] LOGIN SUCCESS (Fallback). Token Saved:", c.Csstr)
+			fmt.Println("[Masdar] ✅ LOGIN SUCCESS (Fallback). New Token:", c.Csstr)
 		} else {
-			return errors.New("failed to extract csstr token after login")
+			return errors.New("failed to extract csstr token")
 		}
 	}
 
 	return nil
 }
 
-// ---------------------- API CALLS ----------------------
+// ---------------------- API CALLS (With Smart Retry) ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
-	// 1. Ensure we are logged in (Only runs if c.Csstr is empty)
-	if err := c.ensureSession(); err != nil {
-		return nil, err
+	// First check
+	if c.Csstr == "" {
+		if err := c.ForceRelogin(""); err != nil {
+			return nil, err
+		}
 	}
 
-	// 2. Prepare API Request
+	// Capture token *before* request for comparison later
+	currentToken := c.Csstr
+
+	// --- Request Logic ---
 	now := time.Now()
 	todayDate := now.Format("2006-01-02")
 	fdate1 := todayDate + " 00:00:00"
@@ -183,7 +201,7 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 	params.Set("frange", "")
 	params.Set("fclient", "")
 	params.Set("fg", "0")
-	params.Set("csstr", c.Csstr) // Saved Token Used Here
+	params.Set("csstr", currentToken) 
 	params.Set("sEcho", "1")
 	params.Set("iDisplayStart", "0")
 	params.Set("iDisplayLength", "100") 
@@ -197,7 +215,6 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 	req.Header.Set("Referer", ReportsPage)
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 
-	// 3. Execute Request
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -205,19 +222,19 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	// 4. Validate Response (Check if Session Expired)
+	// --- Check for Expiry ---
 	if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
-		fmt.Println("[Masdar] Session Expired/Invalid. Clearing token...")
+		fmt.Println("[Masdar] Session Invalid/Expired. Initiating Lock Sequence...")
 		
-		// سیشن ایکسپائر ہو گیا ہے، ٹوکن خالی کرو تاکہ اگلی بار نیا لاگ ان ہو
-		c.Mutex.Lock()
-		c.Csstr = "" 
-		c.HTTPClient.Jar, _ = cookiejar.New(nil) // Clear cookies
-		c.Mutex.Unlock()
+		// یہاں "ForceRelogin" کو پرانا ٹوکن بھیجیں
+		// یہ فنکشن دیکھے گا کہ اگر ٹوکن پہلے ہی بدل چکا ہے تو یہ لاگ ان نہیں کرے گا
+		err := c.ForceRelogin(currentToken) 
+		if err != nil {
+			return nil, err
+		}
 
-		// ایک بار دوبارہ ٹرائی کرو (Recursion)
-		fmt.Println("[Masdar] Retrying with new login...")
-		time.Sleep(2 * time.Second) // تھوڑا انتظار کرو
+		// Recursion: اب نئے ٹوکن کے ساتھ دوبارہ ٹرائی کریں
+		// چونکہ ForceRelogin نے سب کچھ روک دیا تھا، اب نیا سیشن تیار ہے
 		return c.GetSMSLogs()
 	}
 
@@ -225,15 +242,15 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 }
 
 func (c *Client) GetNumberStats() ([]byte, error) {
-	// نمبرز والی API کے لیے بھی سیشن چیک کرو
-	if err := c.ensureSession(); err != nil {
-		return nil, err
+	if c.Csstr == "" {
+		if err := c.ForceRelogin(""); err != nil { return nil, err }
 	}
+	currentToken := c.Csstr
 
 	params := url.Values{}
 	params.Set("frange", "")
 	params.Set("fclient", "")
-	params.Set("csstr", c.Csstr) // Saved Token
+	params.Set("csstr", currentToken)
 	params.Set("sEcho", "2")
 	params.Set("iDisplayStart", "0")
 	params.Set("iDisplayLength", "-1") 
@@ -248,35 +265,27 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 	req.Header.Set("Referer", BaseURL+"/ints/agent/MySMSNumbers")
 
 	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	// Check expiry
 	if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
-		fmt.Println("[Masdar] Number API Session Invalid. Clearing...")
-		c.Mutex.Lock()
-		c.Csstr = ""
-		c.HTTPClient.Jar, _ = cookiejar.New(nil)
-		c.Mutex.Unlock()
-		
-		time.Sleep(2 * time.Second)
+		fmt.Println("[Masdar] Number API Session Invalid. Locking...")
+		err := c.ForceRelogin(currentToken)
+		if err != nil { return nil, err }
 		return c.GetNumberStats()
 	}
 
 	return cleanMasdarNumbers(body)
 }
 
-// Helper to clean up repeated headers
 func (c *Client) setCommonHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9,ur-PK;q=0.8,ur;q=0.7")
 	req.Header.Set("Connection", "keep-alive")
 }
 
-// ------------------ CLEANING FUNCTIONS (No Changes) ------------------
+// ------------------ CLEANING FUNCTIONS ------------------
 
 func cleanMasdarSMS(rawJSON []byte) ([]byte, error) {
 	var apiResp ApiResponse
