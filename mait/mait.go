@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"html"
 )
 
 // URLs
