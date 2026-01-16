@@ -69,7 +69,7 @@ func GetSession() *Client {
 }
 
 // ---------------------------------------------------------
-// LOGIN LOGIC (Updated Captcha)
+// LOGIN LOGIC (DEBUG MODE ENABLED)
 // ---------------------------------------------------------
 
 func (c *Client) ensureSession() error {
@@ -96,20 +96,23 @@ func (c *Client) performLogin() error {
 	bodyString := string(bodyBytes)
 
 	// ==========================================================
-	// FIX: Robust Captcha Regex
-	// HTML Example: What is 1 + 5 = ? : <input...
+	// CAPTCHA LOGIC WITH HTML DUMP
 	// ==========================================================
 	fmt.Println("[Masdar] >> Step 2: Solving Captcha")
 	
-	// یہ Regex اب اسپیس اور ایکسٹرا الفاظ کو بہتر ہینڈل کرے گا
-	// \s* کا مطلب ہے اسپیس ہو بھی سکتی ہے اور نہیں بھی
+	// Regex: Looks for "What is 1 + 5" pattern
 	re := regexp.MustCompile(`What\s+is\s+(\d+)\s*\+\s*(\d+)`)
 	matches := re.FindStringSubmatch(bodyString)
 	
 	if len(matches) < 3 {
-		// ڈیبگنگ کے لیے اگر کیپچا فیل ہو تو باڈی پرنٹ کروا سکتے ہیں
-		// fmt.Println(bodyString) 
-		return errors.New("captcha regex failed to find numbers")
+		// ======================================================
+		// DEBUG BLOCK: If Regex fails, PRINT THE HTML
+		// ======================================================
+		fmt.Println("\n\n================ [ DEBUG: HTML START ] ================")
+		fmt.Println(bodyString)
+		fmt.Println("================ [ DEBUG: HTML END ] ================\n\n")
+		
+		return errors.New("captcha failed: check the HTML printed above to see what server returned")
 	}
 
 	num1, _ := strconv.Atoi(matches[1])
@@ -157,13 +160,14 @@ func (c *Client) performLogin() error {
 		c.Csstr = csstrMatch[1] // Save to RAM
 		fmt.Println("[Masdar] SUCCESS: Found Csstr:", c.Csstr)
 	} else {
-		// Fallback regex (Sometimes inside quotes like "csstr":"xxx")
+		// Fallback regex
 		fallbackRe := regexp.MustCompile(`["']csstr["']\s*[:=]\s*["']?([^"']+)["']?`)
 		match2 := fallbackRe.FindStringSubmatch(reportString)
 		if len(match2) > 1 {
 			c.Csstr = match2[1]
 			fmt.Println("[Masdar] SUCCESS: Found Csstr (Fallback):", c.Csstr)
 		} else {
+			// اگر ٹوکن نہ ملے تو یہاں بھی رپورٹ پرنٹ کروا سکتے ہیں اگر ضرورت ہو
 			return errors.New("csstr token not found (Login likely failed)")
 		}
 	}
@@ -171,7 +175,7 @@ func (c *Client) performLogin() error {
 	return nil
 }
 
-// ---------------------- SMS CLEANING (Date Updated) ----------------------
+// ---------------------- SMS CLEANING ----------------------
 
 func (c *Client) GetSMSLogs() ([]byte, error) {
 	c.Mutex.Lock()
@@ -187,11 +191,8 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 			return nil, err
 		}
 
-		// ==========================================================
-		// FIX: Date Logic (Current Day 00:00 to 23:59)
-		// ==========================================================
+		// Current Date
 		now := time.Now()
-		// آج کی تاریخ لی ہے
 		todayDate := now.Format("2006-01-02")
 		
 		fdate1 := todayDate + " 00:00:00"
@@ -202,8 +203,8 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		params.Set("fdate2", fdate2)
 		params.Set("frange", "")
 		params.Set("fclient", "")
-		params.Set("fnum", "") // Added based on trace
-		params.Set("fcli", "") // Added based on trace
+		params.Set("fnum", "")
+		params.Set("fcli", "")
 		params.Set("fgdate", "")
 		params.Set("fgmonth", "")
 		params.Set("fgrange", "")
@@ -218,11 +219,8 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 
 		params.Set("sEcho", "1")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "100") // 100 records per fetch
-		params.Set("mDataProp_0", "0") // Maps to Date column
-		
-		// ضروری نہیں لیکن ٹریس کے مطابق کچھ اضافی پیرامیٹرز سیٹ کیے جا سکتے ہیں
-		// یہاں ہم صرف ضروری پیرامیٹرز بھیج رہے ہیں تاکہ سرور جواب دے دے
+		params.Set("iDisplayLength", "100") 
+		params.Set("mDataProp_0", "0") 
 
 		finalURL := SMSApiURL + "?" + params.Encode()
 
@@ -239,7 +237,6 @@ func (c *Client) GetSMSLogs() ([]byte, error) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		// Check for Session Expiry (HTML response instead of JSON)
 		if bytes.Contains(body, []byte("<!DOCTYPE html>")) || bytes.Contains(body, []byte("<html")) {
 			fmt.Println("[Masdar] Session Expired (HTML received). Re-logging silently...")
 			c.Csstr = "" 
@@ -313,12 +310,11 @@ func (c *Client) GetNumberStats() ([]byte, error) {
 			params.Set("csstr", c.Csstr)
 		}
 
-		// Exact parameters from your trace
 		params.Set("sEcho", "2")
 		params.Set("iColumns", "8")
 		params.Set("sColumns", ",,,,,,,")
 		params.Set("iDisplayStart", "0")
-		params.Set("iDisplayLength", "-1") // -1 means ALL records
+		params.Set("iDisplayLength", "-1") 
 		params.Set("sSearch", "")
 		params.Set("bRegex", "false")
 		params.Set("iSortingCols", "1")
